@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "production_master": {
+    "file": "knightframe-primary-master.png",
+    "sha256": "EE5BD895E30574B50494D40F5471286258F6C282D7C6051EA79E37D71A08C708",
+    "locked": true
+  },
+  "approved_backup": {
+    "file": "knightframe-primary-backup-approved.png",
+    "sha256": "EE5BD895E30574B50494D40F5471286258F6C282D7C6051EA79E37D71A08C708",
+    "locked": true
+  },
+  "reference_only": {
+    "file": "knightframe-primary-hard-alt.png",
+    "sha256": "44D235A617598E80D895C88D75D290F24C81E04B1948B86DD522E9A7ADF0597F",
+    "locked": true,
+    "shipping_input": false
+  },
+  "optical_sizes": [
+    16,
+    20,
+    24,
+    28,
+    32,
+    48
+  ],
+  "direct_master_sizes": [
+    64,
+    96,
+    128,
+    256,
+    1024
+  ],
+  "ico_sizes": [
+    16,
+    20,
+    24,
+    28,
+    32,
+    48,
+    64,
+    96,
+    128,
+    256
+  ],
+  "shipping": [
+    {
+      "file": "knightframe-primary-black-transparent.png",
+      "bytes": 60238,
+      "sha256": "6C50D70C2DE5E62009EEEE53BDB0F2E524E37F083FDF1C292010D416DEEBA4E1"
+    },
+    {
+      "file": "knightframe-primary-white-transparent.png",
+      "bytes": 64324,
+      "sha256": "CAC9EFFAAFBB3F43AC7D98D0617BB90BF5EA568AB0AAE2ADD7F7E773CC113D28"
+    },
+    {
+      "file": "knightframe-app-light-1024.png",
+      "bytes": 110334,
+      "sha256": "4AE1BF389B0DCCECA54710CE26A2CCDF977B957BE5EC016579F42FA2E4A3942E"
+    },
+    {
+      "file": "knightframe-app-dark-1024.png",
+      "bytes": 105521,
+      "sha256": "D3ACD86153E0F79774FA347A9D521AF632B3F558CFE7147E6F4EFFDB22F2C39B"
+    },
+    {
+      "file": "knightframe-app-light.ico",
+      "bytes": 49513,
+      "sha256": "73DD2DF93118CE2D4B623DBA3D927F3EF13B903D49614A3802434CB0FF531432"
+    },
+    {
+      "file": "knightframe-app-dark.ico",
+      "bytes": 48892,
+      "sha256": "BC2D2E0134ACA3FFEC2B039DE9A463EE95EBC29FDB85CEEE90DE45227A52C397"
+    },
+    {
+      "file": "knightframe-small-size-validation.png",
+      "bytes": 58580,
+      "sha256": "0FB929B6559AC4E2E9397D162616542C2832473CE9C1B7BA8589F7ED86B5021B"
+    }
+  ],
+  "brand_layers": {
+    "ui_hero": {
+      "master": "knightframe-ui-hero-master.png",
+      "master_sha256": "F387DEAF6FE1B6A26D93DA103E93033138E6D93E2C729B8A08F05D2EDCCA1B71",
+      "locked": true,
+      "minimum_display_px": 64,
+      "derivatives": [
+        {
+          "file": "knightframe-ui-hero-black-transparent.png",
+          "sha256": "016C95934A191D3F784074C6724EDC07FEBF257A1C42A16A6370231560D9DB8C",
+          "bytes": 55650
+        },
+        {
+          "file": "knightframe-ui-hero-white-transparent.png",
+          "sha256": "AA71FB3F0232907B47A144E5F0C0684D67530E8F4672C379B698023B1D8D5435",
+          "bytes": 61747
+        }
+      ]
+    },
+    "compact_mark": {
+      "master": "knightframe-primary-master.png",
+      "master_sha256": "EE5BD895E30574B50494D40F5471286258F6C282D7C6051EA79E37D71A08C708",
+      "locked": true,
+      "use": "ICO and compact marks; all existing derivatives remain frozen"
+    }
+  }
+}

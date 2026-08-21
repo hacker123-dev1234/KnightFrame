@@ -1,0 +1,91 @@
+{
+  "protocolVersion": "knightframe.plugin.v1",
+  "id": "sample.counter",
+  "name": {
+    "defaultLocale": "en-US",
+    "values": {
+      "en-US": "Sample Counter",
+      "zh-CN": "Sample Counter"
+    }
+  },
+  "version": "0.1.0",
+  "runtime": "rust",
+  "entry": "bin/sample-counter.exe",
+  "configSchema": { "type": "object" },
+  "inject": ["workspace"],
+  "provide": ["sampleCounter"],
+  "intercept": { "workspace": { "readOnly": true } },
+  "isolate": { "sampleCounter": true },
+  "tools": [
+    {
+      "name": "counter.increment",
+      "description": "Increment the sample counter.",
+      "inputSchema": { "type": "object", "properties": {} },
+      "outputSchema": { "type": "object", "properties": { "value": { "type": "integer" } } }
+    }
+  ],
+  "ui": [
+    {
+      "type": "button",
+      "id": "run-action",
+      "slot": "tool.view.cordis",
+      "bounds": { "x": 400, "y": 400, "width": 1800, "height": 800 },
+      "label": "Run",
+      "command": "counter.increment"
+    },
+    {
+      "type": "toggle",
+      "id": "toggle-mode",
+      "slot": "tool.view.cordis",
+      "bounds": { "x": 2400, "y": 400, "width": 1800, "height": 800 },
+      "label": "Enabled",
+      "value": true,
+      "command": "counter.toggle"
+    },
+    {
+      "type": "text",
+      "id": "status-text",
+      "slot": "tool.view.cordis",
+      "bounds": { "x": 400, "y": 1500, "width": 3800, "height": 700 },
+      "text": "Ready"
+    },
+    {
+      "type": "input",
+      "id": "name-input",
+      "slot": "tool.view.cordis",
+      "bounds": { "x": 400, "y": 2500, "width": 3800, "height": 900 },
+      "label": "Name",
+      "placeholder": "Enter a name",
+      "command": "counter.rename"
+    },
+    {
+      "type": "select",
+      "id": "mode-select",
+      "slot": "tool.view.cordis",
+      "bounds": { "x": 400, "y": 3700, "width": 3800, "height": 900 },
+      "label": "Mode",
+      "options": [
+        { "value": "quiet", "label": "Quiet" },
+        { "value": "verbose", "label": "Verbose" }
+      ],
+      "value": "quiet",
+      "command": "counter.mode"
+    },
+    {
+      "type": "separator",
+      "id": "main-separator",
+      "slot": "tool.view.cordis",
+      "bounds": { "x": 400, "y": 4900, "width": 3800, "height": 100 },
+      "orientation": "horizontal"
+    },
+    {
+      "type": "panel",
+      "id": "summary-panel",
+      "slot": "tool.view.cordis",
+      "bounds": { "x": 4500, "y": 400, "width": 5000, "height": 4600 },
+      "title": "Summary",
+      "elevated": true
+    }
+  ],
+  "permissions": ["ui", "workspaceRead"]
+}

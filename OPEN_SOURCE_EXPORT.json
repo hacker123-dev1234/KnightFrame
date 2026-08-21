@@ -1,0 +1,14 @@
+﻿{
+    "generatedAt":  "2026-08-21T19:35:12.8864880+08:00",
+    "source":  "knightframe-rs",
+    "excludes":  [
+                     "credentials",
+                     "node_modules",
+                     "target",
+                     "dist",
+                     "temporary files",
+                     "diagnostics",
+                     "reference projects"
+                 ],
+    "version":  "0.1.0"
+}

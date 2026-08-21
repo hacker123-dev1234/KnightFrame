@@ -1,0 +1,14 @@
+- id: cordis-host-runner
+  name: '@deepseek-ai/dsh-cordis-host-runner'
+  config:
+    vmTimeoutMs: 5000
+  inject: [tools]
+
+- id: tool-cordis
+  name: '@deepseek-ai/dsh-tool-cordis'
+  disabled: false
+  inject:
+    tools: null
+    systemPrompt: null
+    dynamicCordisRunner: null
+    cordisInspect: null

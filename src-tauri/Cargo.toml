@@ -1,0 +1,53 @@
+[package]
+name = "knightframe"
+version = "0.1.0"
+default-run = "knightframe"
+description = "KnightFrame desktop coding agent"
+authors = ["KnightFrame Contributors"]
+edition = "2024"
+license = "Apache-2.0"
+
+[lib]
+name = "knightframe_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = []
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+anyhow = "1.0.104"
+eventsource-stream = "0.2.3"
+futures-util = "0.3.32"
+ignore = "0.4.25"
+parking_lot = "0.12.5"
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "stream", "rustls-tls"] }
+semver = "1.0.28"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+serde_yaml = "0.9.34"
+tauri = { version = "2.11.5", features = ["unstable"] }
+tauri-plugin-dialog = "2.7.2"
+tauri-plugin-store = "2.4.4"
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+tokio-util = "0.7.18"
+url = "2.5.8"
+uuid = { version = "1.20.0", features = ["v4", "serde"] }
+walkdir = "2.5.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[dev-dependencies]
+bytes = "1.12.1"
+criterion = { version = "0.5.1", default-features = false }
+tempfile = "3.24.0"
+
+[[bench]]
+name = "core"
+harness = false

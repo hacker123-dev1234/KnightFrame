@@ -1,0 +1,39 @@
+{
+  "name": "knightframe",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:test-exe": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-test-exe.ps1",
+    "build:release": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-release.ps1",
+    "export:opensource": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/export-open-source.ps1",
+    "smoke:test-exe": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/smoke-test-exe.ps1",
+    "smoke:ui": "node ./scripts/smoke-ui-headless.mjs",
+    "verify:test-exe": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-test-exe.ps1 -Smoke",
+    "e2e:free-models": "node ./scripts/e2e-free-models.mjs",
+    "bench": "cargo bench --manifest-path src-tauri/Cargo.toml --bench core --features custom-protocol",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml --features custom-protocol",
+    "lint": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features custom-protocol -- -D warnings",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@lucide/svelte": "^1.0.1",
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "2.7.2",
+    "dompurify": "^3.2.6",
+    "highlight.js": "^11.12.0",
+    "marked": "^16.2.1",
+    "svelte": "5.56.9"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.3.0",
+    "@tauri-apps/cli": "2.11.4",
+    "svelte-check": "4.7.5",
+    "typescript": "5.9.3",
+    "vite": "8.2.1"
+  },
+  "packageManager": "pnpm@11.21.0+sha512.521705bce689924eac72f5a3587122f362689ef6571e55ba80076fd637c11132ecffada26fad4ea79c485bfddbfd3d5a2a5b05805a77e893de71ec8a6cca3bb1"
+}
