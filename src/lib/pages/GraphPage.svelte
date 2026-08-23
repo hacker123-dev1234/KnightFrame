@@ -22,7 +22,7 @@
 </script>
 
 <section class="graph-page">
-  <header class="graph-header">
+  <header class="graph-header" data-tauri-drag-region>
     <button type="button" on:click={onBack} aria-label={t('app.back')} title={t('app.back')}><Icon name="back" /></button>
     <div><span>{t('graph.eyebrow')}</span><h1>{t('graph.title')}</h1></div>
     {#if graph}<div class="graph-stats"><span>{graph.stats.files} {t('graph.files')}</span><span>{graph.stats.directories} {t('graph.directories')}</span><span>{graph.stats.dependencies} {t('graph.dependencies')}</span></div>{/if}

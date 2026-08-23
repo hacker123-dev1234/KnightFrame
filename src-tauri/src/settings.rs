@@ -158,6 +158,9 @@ pub fn kf_settings_update(
     if let Some(value) = patch.skill_opt {
         next.skill_opt = value;
     }
+    if let Some(value) = patch.memory_enabled {
+        next.memory_enabled = value;
+    }
     if let Some(value) = patch.ui_scale {
         // 允许范围 0.85–1.30，超出即拒绝（防止 0/负数毁掉界面）
         if !(0.85..=1.30).contains(&value) {
@@ -205,12 +208,16 @@ pub fn kf_session_model_update(
     model: String,
 ) -> KfResult<SessionSnapshot> {
     let available_models = state.available_models.read().clone();
-    let mut sessions = state.sessions.write();
-    let session = sessions.get_mut(&session_id).ok_or_else(|| {
-        LocalizedError::new("error.session_not_found").arg("sessionId", &session_id)
-    })?;
-    apply_session_model(session, provider, model, &available_models)?;
-    Ok(session.clone())
+    let snapshot = {
+        let mut sessions = state.sessions.write();
+        let session = sessions.get_mut(&session_id).ok_or_else(|| {
+            LocalizedError::new("error.session_not_found").arg("sessionId", &session_id)
+        })?;
+        apply_session_model(session, provider, model, &available_models)?;
+        session.clone()
+    };
+    crate::persistence::save(&state)?;
+    Ok(snapshot)
 }
 
 #[cfg(test)]

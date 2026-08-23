@@ -111,7 +111,7 @@
 </script>
 
 <section class="market-page">
-  <header class="market-toolbar">
+  <header class="market-toolbar" data-tauri-drag-region>
     <div class="toolbar-group">
       <label class="control">
         <span>{t('market.source')}</span>

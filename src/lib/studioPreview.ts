@@ -8,6 +8,7 @@ import type { StudioComponent } from './studio';
 import { STUDIO_BASE_FONT } from './studio';
 
 export const studioPreviewActive = writable(false);
+export const studioPreviewRendering = writable(false);
 export const studioPreviewComponents = writable<StudioComponent[]>([]);
 
 export function initStudioPreview(): boolean {
@@ -15,8 +16,9 @@ export function initStudioPreview(): boolean {
   if (params.get('studioPreview') !== '1') return false;
   studioPreviewActive.set(true);
   window.addEventListener('message', (event: MessageEvent) => {
-    const data = event.data as { type?: string; components?: StudioComponent[] };
+    const data = event.data as { type?: string; active?: boolean; components?: StudioComponent[] };
     if (data?.type === 'kf-studio-layout' && Array.isArray(data.components)) {
+      studioPreviewRendering.set(data.active === true);
       studioPreviewComponents.set(data.components.filter((item) => !item.hidden));
     }
   });

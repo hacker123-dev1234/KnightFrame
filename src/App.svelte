@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { app, activeSession, bootstrap, configureModelThinking, createSession, deleteSession, destroy, loadGraph, openProject, renameSession, runBrowserCommand, selectModel, selectSession, setPage, stopActive, submit, toggleSidebar, toggleTasks, toggleUsage, updateSettings } from './lib/state';
+  import { app, activeSession, bootstrap, configureModelThinking, createSession, deleteSession, destroy, loadGraph, openProject, renameSession, runBrowserCommand, selectModel, selectSession, setPage, stopActive, submit, toggleBrowserPanel, toggleSidebar, toggleTasks, toggleUsage, updateSettings } from './lib/state';
   import { bridge } from './lib/bridge';
   import { translate } from './lib/i18n';
   import { applyUiScale } from './lib/uiScale';
@@ -65,6 +65,30 @@
   $: miniMode = requestedView === 'mini';
   const studioPreview = initStudioPreview();
   let unsubscribePluginStudio: (() => void) | undefined;
+  let browserDockWidth = 420;
+
+  function resetBrowserDock() {
+    browserDockWidth = 420;
+  }
+
+  function resizeBrowserDock(event: PointerEvent) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = browserDockWidth;
+    const workspace = (event.currentTarget as HTMLElement).closest('.main-workspace') as HTMLElement | null;
+    const maxWidth = Math.max(320, (workspace?.clientWidth ?? window.innerWidth) - 460);
+    const move = (next: PointerEvent) => {
+      browserDockWidth = Math.max(300, Math.min(maxWidth, startWidth + next.clientX - startX));
+    };
+    const end = () => {
+      window.removeEventListener('pointermove', move);
+      document.documentElement.classList.remove('resizing-browser-dock');
+    };
+    document.documentElement.classList.add('resizing-browser-dock');
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end, { once: true });
+  }
 
   onMount(() => {
     if (requestedView === 'settings' || requestedView === 'browser') setPage(requestedView);
@@ -123,12 +147,13 @@
       onRename={(id, title) => void renameSession(id, title)}
       onDelete={(id) => void deleteSession(id)}
       onSettings={() => setPage('settings')}
-      onBrowser={() => setPage('browser')}
+      onBrowser={() => void toggleBrowserPanel()}
       onGraph={() => void loadGraph()}
       onStudio={() => void openStudio()}
       onOpenProject={openProject}
     />
-    <main class="main-workspace">
+    <main class="main-workspace" style={`--browser-dock-width:${browserDockWidth}px`}>
+      {#if $app.page !== 'workspace'}<div class="page-drag-strip" data-tauri-drag-region aria-hidden="true"></div>{/if}
       {#if $app.page === 'workspace'}
         <Header
           {locale}
@@ -145,11 +170,19 @@
           onSelectModel={selectModel}
           onConfigureThinking={configureModelThinking}
         />
-        <div class="workspace-content">
-          {#if $activeSession}<ConversationPage {locale} session={$activeSession} userAvatar={$app.settings.userAvatar} {imageInput} disabled={!canSend} taskPanelOpen={$app.taskPanelOpen} onOpenTask={$app.settings.taskManager ? openTaskPanel : undefined} onSend={submit} onStop={stopActive} />
-          {:else}<EmptyPage {locale} {canSend} {imageInput} onSend={submit} onStop={stopActive} />{/if}
+        <div class:browser-docked={$app.browserPanelOpen} class="workspace-content">
+          {#if $app.browserPanelOpen}
+            <section class="browser-dock" aria-label={t('browser.title')}>
+              <BrowserPage {locale} browser={$app.browser} onBackToWorkspace={() => void toggleBrowserPanel(false)} onCommand={runBrowserCommand} />
+            </section>
+            <div class="browser-dock-resizer" role="separator" aria-orientation="vertical" aria-label={t('browser.resize')} title={t('browser.resizeHint')} on:pointerdown={resizeBrowserDock} on:dblclick={resetBrowserDock}><span></span></div>
+          {/if}
+          <div class="conversation-pane">
+            {#if $activeSession}<ConversationPage {locale} session={$activeSession} userAvatar={$app.settings.userAvatar} {imageInput} disabled={!canSend} taskPanelOpen={$app.taskPanelOpen} onOpenTask={$app.settings.taskManager ? openTaskPanel : undefined} onSend={submit} onStop={stopActive} />
+            {:else}<EmptyPage {locale} {canSend} {imageInput} onSend={submit} onStop={stopActive} />{/if}
+          </div>
         </div>
-        <div class="workspace-metrics" aria-label={t('usage.title')}>
+        <div class:browser-docked={$app.browserPanelOpen} class="workspace-metrics" aria-label={t('usage.title')}>
           <div
             class:active={contextUsageRate !== undefined && contextUsageRate > 0}
             class="metric-hud context-usage-hud"

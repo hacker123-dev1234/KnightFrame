@@ -36,6 +36,9 @@ export interface FeatureAvailability {
   usageLedger?: boolean;
   projectIndex?: boolean;
   projectManifest?: boolean;
+  conversationPersistence?: boolean;
+  longTermMemory?: boolean;
+  webSearch?: boolean;
 }
 
 export interface SettingsSnapshot {
@@ -50,6 +53,9 @@ export interface SettingsSnapshot {
   auxiliaryEnabled: boolean;
   auxiliaryProviderId?: string;
   auxiliaryModelId?: string;
+  skillRouter?: boolean;
+  skillOpt?: boolean;
+  memoryEnabled?: boolean;
   uiScale?: number;
 }
 

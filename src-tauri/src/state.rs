@@ -58,6 +58,9 @@ pub struct ToolObservationIndex {
 }
 
 pub struct AppState {
+    /// Set by the desktop bootstrap. Headless/test states intentionally keep
+    /// this empty so they never write into a user's profile.
+    pub storage_dir: RwLock<Option<PathBuf>>,
     pub settings: RwLock<SettingsSnapshot>,
     pub sessions: RwLock<HashMap<String, SessionSnapshot>>,
     pub tasks: RwLock<HashMap<String, TaskSnapshot>>,
@@ -71,6 +74,7 @@ pub struct AppState {
     pub available_models: RwLock<HashSet<String>>,
     pub skill_generation: AtomicU64,
     pub skill_usage: RwLock<HashMap<String, SkillUsageStats>>,
+    pub memory: RwLock<crate::memory::MemoryArchive>,
     pub client: reqwest::Client,
     pub auxiliary_client: reqwest::Client,
 }
@@ -78,6 +82,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(settings: SettingsSnapshot) -> Arc<Self> {
         Arc::new(Self {
+            storage_dir: RwLock::new(None),
             settings: RwLock::new(settings),
             sessions: RwLock::new(HashMap::new()),
             tasks: RwLock::new(HashMap::new()),
@@ -91,6 +96,7 @@ impl AppState {
             available_models: RwLock::new(HashSet::new()),
             skill_generation: AtomicU64::new(0),
             skill_usage: RwLock::new(HashMap::new()),
+            memory: RwLock::new(crate::memory::MemoryArchive::default()),
             client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(8))
                 .user_agent("KnightFrame/0.1")
@@ -102,6 +108,10 @@ impl AppState {
                 .build()
                 .expect("valid auxiliary HTTP client"),
         })
+    }
+
+    pub fn set_storage_dir(&self, directory: PathBuf) {
+        *self.storage_dir.write() = Some(directory);
     }
 }
 

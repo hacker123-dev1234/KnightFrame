@@ -288,9 +288,10 @@ try {
       knightFrameLoaded: Boolean(frameDocument?.querySelector('.app-shell .main-workspace')),
       frameTitle: frameDocument?.title,
       nodeCount: document.querySelectorAll('.studio-node').length,
+      frameNodeCount: frameDocument?.querySelectorAll('.kf-preview-node').length ?? 0,
     };
   })()`);
-  if (!studioReturn.design || !studioReturn.frame || studioReturn.frameReady !== 'complete' || !studioReturn.knightFrameLoaded || !studioReturn.frameUrl?.includes('index.html?studioPreview=1') || studioReturn.nodeCount !== 1) {
+  if (!studioReturn.design || !studioReturn.frame || studioReturn.frameReady !== 'complete' || !studioReturn.knightFrameLoaded || !studioReturn.frameUrl?.includes('index.html?studioPreview=1') || studioReturn.nodeCount !== 1 || studioReturn.frameNodeCount !== 0) {
     throw new Error(`Plugin Studio did not return to a live KnightFrame host: ${JSON.stringify(studioReturn)}`);
   }
 
@@ -304,16 +305,25 @@ try {
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const frameStyle = getComputedStyle(document.querySelector('.studio-host-frame'));
     const layerStyle = getComputedStyle(document.querySelector('.studio-node-layer'));
+    const previewPointer = frameStyle.pointerEvents;
+    const layerHidden = layerStyle.display === 'none';
     const frameNodes = document.querySelector('.studio-host-frame')?.contentDocument?.querySelectorAll('.kf-preview-node')?.length ?? 0;
+    const workshop = [...document.querySelectorAll('.studio-mode-toggle button')].find((button) => button.textContent.includes('工坊') || button.textContent.includes('Workshop'));
+    workshop?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const returnedLayerStyle = getComputedStyle(document.querySelector('.studio-node-layer'));
+    const returnedFrameNodes = document.querySelector('.studio-host-frame')?.contentDocument?.querySelectorAll('.kf-preview-node')?.length ?? 0;
     return {
       workshopPointer,
       toggle: Boolean(toggle),
-      previewPointer: frameStyle.pointerEvents,
-      layerHidden: layerStyle.display === 'none',
+      previewPointer,
+      layerHidden,
       frameNodes,
+      returnedLayerVisible: returnedLayerStyle.display !== 'none',
+      returnedFrameNodes,
     };
   })()`);
-  if (studioModes.workshopPointer !== 'none' || !studioModes.toggle || studioModes.previewPointer !== 'auto' || !studioModes.layerHidden || studioModes.frameNodes < 1) {
+  if (studioModes.workshopPointer !== 'none' || !studioModes.toggle || studioModes.previewPointer !== 'auto' || !studioModes.layerHidden || studioModes.frameNodes < 1 || !studioModes.returnedLayerVisible || studioModes.returnedFrameNodes !== 0) {
     throw new Error(`Plugin Studio workshop/preview modes failed: ${JSON.stringify(studioModes)}`);
   }
 
@@ -326,16 +336,37 @@ try {
     const tabs = document.querySelector('.browser-tabs');
     const toolbar = document.querySelector('.browser-toolbar');
     const stage = document.querySelector('.browser-stage');
+    const dock = document.querySelector('.browser-dock');
+    const resizer = document.querySelector('.browser-dock-resizer');
+    const conversation = document.querySelector('.conversation-pane');
+    const beforeWidth = dock?.getBoundingClientRect().width ?? 0;
+    if (resizer) {
+      const x = resizer.getBoundingClientRect().left;
+      resizer.dispatchEvent(new PointerEvent('pointerdown', { bubbles:true, button:0, clientX:x }));
+      window.dispatchEvent(new PointerEvent('pointermove', { bubbles:true, clientX:x + 60 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { bubbles:true, clientX:x + 60 }));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+    const draggedWidth = dock?.getBoundingClientRect().width ?? 0;
+    resizer?.dispatchEvent(new MouseEvent('dblclick', { bubbles:true }));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const restoredWidth = dock?.getBoundingClientRect().width ?? 0;
     return {
       entry: Boolean(entry),
       page: Boolean(page),
       tabs: Boolean(tabs),
       toolbar: Boolean(toolbar),
+      dock: Boolean(dock),
+      resizer: Boolean(resizer),
+      conversation: Boolean(conversation),
+      beforeWidth,
+      draggedWidth,
+      restoredWidth,
       stage: stage ? { width: stage.getBoundingClientRect().width, height: stage.getBoundingClientRect().height } : null,
       overflow: page ? page.scrollWidth > page.clientWidth || page.scrollHeight > page.clientHeight : true,
     };
   })()`);
-  if (!browserUi.entry || !browserUi.page || !browserUi.tabs || !browserUi.toolbar || !browserUi.stage || browserUi.stage.width < 600 || browserUi.stage.height < 400 || browserUi.overflow) {
+  if (!browserUi.entry || !browserUi.page || !browserUi.tabs || !browserUi.toolbar || !browserUi.dock || !browserUi.resizer || !browserUi.conversation || !browserUi.stage || browserUi.stage.width < 260 || browserUi.stage.height < 400 || browserUi.draggedWidth <= browserUi.beforeWidth || Math.abs(browserUi.restoredWidth - 420) > 2 || browserUi.overflow) {
     throw new Error(`Built-in browser shell failed: ${JSON.stringify(browserUi)}`);
   }
   const browserShot = await screenshot(cdp, 'browser-headless.png');
@@ -343,6 +374,17 @@ try {
     document.querySelector('.browser-exit')?.click();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   })()`);
+  const browserRestore = await evaluate(cdp, `(async () => {
+    const entry = document.querySelector('button[title="Browser"], button[title="浏览器"]');
+    const closed = !document.querySelector('.browser-dock');
+    entry?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const restored = Boolean(document.querySelector('.browser-dock'));
+    document.querySelector('.browser-exit')?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return { closed, restored };
+  })()`);
+  if (!browserRestore.closed || !browserRestore.restored) throw new Error(`Built-in browser restore failed: ${JSON.stringify(browserRestore)}`);
   const auxiliarySettings = await evaluate(cdp, `(async () => {
     const entry = document.querySelector('button[title="Settings"], button[title="设置"]');
     entry?.click();

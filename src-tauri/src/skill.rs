@@ -16,7 +16,7 @@ include!(concat!(env!("OUT_DIR"), "/builtin_skills.rs"));
 
 const MAX_SKILL_BYTES: u64 = 128 * 1024;
 const MAX_SELECTED_SKILLS: usize = 3;
-const SKILL_TOOL_COMPATIBILITY: &str = "Use only KnightFrame's exposed find/search/read/edit/run/task tools. Translate legacy read_file/glob/grep/ls to find/search/read, bash to run, multi_edit/edit_file to edit, and todo_write/complete_step to task. Do not invent unavailable tools.";
+const SKILL_TOOL_COMPATIBILITY: &str = "Use only KnightFrame's exposed find/search/read/edit/run/web_search/web_fetch/browser/task tools. Translate legacy read_file/glob/grep/ls to find/search/read, bash to run, multi_edit/edit_file to edit, and todo_write/complete_step to task. Do not invent unavailable tools.";
 
 #[derive(Debug, Clone)]
 pub struct SkillDefinition {
@@ -408,8 +408,6 @@ fn parse_skill(filename: &str, text: &str, source: &str) -> Option<SkillDefiniti
         "multi_edit",
         "todo_write",
         "complete_step",
-        "web_search",
-        "web_fetch",
         "ask_user",
         "enable_skill",
     ];

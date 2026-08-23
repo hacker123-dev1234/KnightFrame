@@ -27,6 +27,10 @@ pub struct SettingsSnapshot {
     pub skill_router: bool,
     #[serde(default = "default_true")]
     pub skill_opt: bool,
+    /// Durable memory is opt-in. Entries are curated only when old history is
+    /// actually compacted; ordinary turns never write memory.
+    #[serde(default)]
+    pub memory_enabled: bool,
     /// 界面缩放（0.85–1.30，1.0 = 原生）。字体/控件整体随 zoom 缩放，
     /// 旧配置文件没有此字段时回落 1.0。
     #[serde(default = "default_ui_scale")]
@@ -57,6 +61,7 @@ impl Default for SettingsSnapshot {
             auxiliary_model_id: String::new(),
             skill_router: true,
             skill_opt: true,
+            memory_enabled: false,
             ui_scale: 1.0,
         }
     }
@@ -78,6 +83,7 @@ pub struct SettingsPatch {
     pub auxiliary_model_id: Option<String>,
     pub skill_router: Option<bool>,
     pub skill_opt: Option<bool>,
+    pub memory_enabled: Option<bool>,
     pub ui_scale: Option<f64>,
 }
 
@@ -159,7 +165,7 @@ pub struct ProviderModel {
     pub adapter: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageSnapshot {
     pub id: String,
@@ -180,7 +186,7 @@ pub struct MessageAttachment {
     pub size: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSnapshot {
     pub fresh_input_tokens: u64,
@@ -191,7 +197,7 @@ pub struct UsageSnapshot {
     pub current_context_tokens: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSnapshot {
     pub id: String,

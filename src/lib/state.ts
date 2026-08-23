@@ -30,6 +30,7 @@ export interface AppState {
   sidebarCollapsed: boolean;
   taskPanelOpen: boolean;
   usagePanelOpen: boolean;
+  browserPanelOpen: boolean;
   settings: SettingsSnapshot;
   providers: ProviderModel[];
   providerTemplates: ProviderTemplate[];
@@ -49,6 +50,7 @@ const defaults: AppState = {
   sidebarCollapsed: false,
   taskPanelOpen: false,
   usagePanelOpen: false,
+  browserPanelOpen: false,
   settings: {
     locale: 'en-US',
     taskManager: true,
@@ -72,6 +74,7 @@ export const activeSession = derived(app, ($app) =>
 );
 
 let unsubscribeRuntime: (() => void) | undefined;
+let modelSelectionBarrier: Promise<void> = Promise.resolve();
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
@@ -210,13 +213,13 @@ function applyNonDeltaEvent(event: RuntimeEvent): void {
     return;
   }
 
-  // 内置浏览器被打开（用户或 agent）：切到浏览器页，让舞台上报矩形、
-  // 子 webview 精确嵌入，而不是悬浮在当前页上像一个弹窗。
+  // 内置浏览器被打开（用户或 agent）：在工作区左侧停靠，不打断对话。
   if (event.kind === 'browser.opened' || event.kind === 'browser.updated') {
     const browser = data as unknown as BrowserSnapshot;
     app.update((state) => ({
       ...state,
-      page: event.kind === 'browser.opened' ? 'browser' : state.page,
+      page: event.kind === 'browser.opened' ? 'workspace' : state.page,
+      browserPanelOpen: event.kind === 'browser.opened' ? true : state.browserPanelOpen,
       browser: Array.isArray(browser.tabs)
         ? browser
         : { ...(state.browser ?? { available: true, open: false, tabs: [] }), ...browser },
@@ -229,6 +232,10 @@ function applyNonDeltaEvent(event: RuntimeEvent): void {
     const page = typeof data.page === 'string' ? data.page : '';
     if (page === 'studio') {
       void bridge.openPluginStudio().catch(() => undefined);
+      return;
+    }
+    if (page === 'browser') {
+      app.update((state) => ({ ...state, page: 'workspace', browserPanelOpen: true }));
       return;
     }
     if (['workspace', 'settings', 'browser', 'market', 'graph'].includes(page)) {
@@ -475,7 +482,9 @@ export async function bootstrap(): Promise<void> {
 }
 
 export function setPage(page: Page): void {
-  app.update((state) => ({ ...state, page }));
+  app.update((state) => page === 'browser'
+    ? { ...state, page: 'workspace', browserPanelOpen: true }
+    : { ...state, page });
 }
 
 export function toggleSidebar(): void {
@@ -488,6 +497,18 @@ export function toggleTasks(): void {
 
 export function toggleUsage(): void {
   app.update((state) => ({ ...state, usagePanelOpen: !state.usagePanelOpen }));
+}
+
+export async function toggleBrowserPanel(force?: boolean): Promise<void> {
+  const state = get(app);
+  const open = force ?? !state.browserPanelOpen;
+  app.update((current) => ({ ...current, page: 'workspace', browserPanelOpen: open }));
+  if (state.browser?.open) {
+    try {
+      const browser = await bridge.browserCommand(open ? 'show' : 'hide');
+      app.update((current) => ({ ...current, browser }));
+    } catch { /* the dock still remains recoverable from the sidebar */ }
+  }
 }
 
 export function selectSession(id?: string): void {
@@ -564,31 +585,37 @@ export async function configureModelThinking(
 }
 
 export async function selectModel(providerId: string, modelId: string): Promise<void> {
-  const state = get(app);
-  const selected = state.providers.find((model) =>
-    model.available && model.providerId === providerId && model.modelId === modelId,
-  );
-  if (!selected) return;
+  const operation = modelSelectionBarrier.then(async () => {
+    const state = get(app);
+    const selected = state.providers.find((model) =>
+      model.available && model.providerId === providerId && model.modelId === modelId,
+    );
+    if (!selected) return;
 
-  const session = state.sessions.find((item) => item.id === state.activeSessionId);
-  if (session?.status === 'streaming') return;
-  const settings = await bridge.updateSettings({ providerId, modelId });
-  let updatedSession: SessionSnapshot | undefined;
-  if (session) {
-    updatedSession = await bridge.updateSessionModel(session.id, providerId, modelId);
-  }
-  app.update((current) => ({
-    ...current,
-    settings: { ...settings, providerId, modelId },
-    sessions: updatedSession
-      ? current.sessions.map((item) => item.id === updatedSession.id
-        ? { ...item, ...updatedSession, messages: item.messages }
-        : item)
-      : current.sessions,
-  }));
+    const session = state.sessions.find((item) => item.id === state.activeSessionId);
+    if (session?.status === 'streaming') return;
+    const settings = await bridge.updateSettings({ providerId, modelId });
+    let updatedSession: SessionSnapshot | undefined;
+    if (session) {
+      updatedSession = await bridge.updateSessionModel(session.id, providerId, modelId);
+    }
+    app.update((current) => ({
+      ...current,
+      settings: { ...settings, providerId, modelId },
+      sessions: updatedSession
+        ? current.sessions.map((item) => item.id === updatedSession.id
+          ? { ...item, ...updatedSession, messages: item.messages }
+          : item)
+        : current.sessions,
+    }));
+  });
+  modelSelectionBarrier = operation.catch(() => undefined);
+  await operation;
 }
 
 export async function submit(content: string, clarify = false, attachments: MessageAttachment[] = []): Promise<void> {
+  // Do not let a send overtake the two-step global + session model update.
+  await modelSelectionBarrier;
   const state = get(app);
   if (state.project?.status === 'indexing' || state.project?.status === 'updating') return;
   let sessionId = state.activeSessionId;
@@ -655,7 +682,12 @@ export async function stopActive(): Promise<void> {
 
 export async function runBrowserCommand(action: Parameters<typeof bridge.browserCommand>[0], url?: string, tabId?: string): Promise<void> {
   const snapshot = await bridge.browserCommand(action, url, tabId);
-  app.update((state) => ({ ...state, browser: snapshot }));
+  app.update((state) => ({
+    ...state,
+    browser: snapshot,
+    browserPanelOpen: action === 'hide' ? false : action === 'close' ? false : snapshot.open || state.browserPanelOpen,
+    page: snapshot.open && action !== 'hide' ? 'workspace' : state.page,
+  }));
 }
 
 export function destroy(): void {

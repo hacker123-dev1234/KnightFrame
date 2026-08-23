@@ -4,6 +4,8 @@ mod credentials;
 mod error;
 pub mod headless;
 pub mod market;
+mod memory;
+mod persistence;
 pub mod plugin;
 mod plugin_studio;
 pub mod project;
@@ -16,6 +18,7 @@ mod state;
 mod task;
 pub mod tools;
 mod types;
+mod web;
 
 use crate::{
     error::KfResult,
@@ -39,7 +42,8 @@ async fn kf_app_bootstrap(
     }
     let models = provider::configured_catalog(&state.settings.read().providers);
     provider::install_catalog(&state, &models);
-    let sessions: Vec<_> = state.sessions.read().values().cloned().collect();
+    let sessions = persistence::sorted_sessions(&state);
+    let active_session_id = sessions.first().map(|session| session.id.clone());
     let project = state.active_project.read().as_ref().and_then(|root| {
         state
             .projects
@@ -52,7 +56,7 @@ async fn kf_app_bootstrap(
         providers: models,
         provider_templates: provider::PROVIDER_TEMPLATES.to_vec(),
         sessions,
-        active_session_id: None,
+        active_session_id,
         project,
         browser: BrowserSnapshot {
             available: true,
@@ -75,6 +79,9 @@ async fn kf_app_bootstrap(
             ("skillOpt".into(), true),
             ("marketAnalysis".into(), true),
             ("miniAssistant".into(), false),
+            ("conversationPersistence".into(), true),
+            ("longTermMemory".into(), true),
+            ("webSearch".into(), true),
         ]),
     })
 }
@@ -85,11 +92,15 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
             let settings = settings::load(app.handle());
-            app.manage(AppState::new(settings));
             let config_dir = app
                 .path()
                 .app_config_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let state = AppState::new(settings);
+            state.set_storage_dir(config_dir.clone());
+            persistence::load(&state);
+            memory::load(&state);
+            app.manage(state);
             app.manage(std::sync::Arc::new(market::MarketState::new(&config_dir)));
             Ok(())
         })

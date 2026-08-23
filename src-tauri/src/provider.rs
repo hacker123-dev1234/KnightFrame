@@ -1187,19 +1187,19 @@ impl ToolAccumulator {
                     return Err(LocalizedError::new("error.provider_tool_name_changed"));
                 }
             }
-            let arguments = function
-                .get("arguments")
-                .and_then(|arguments| match arguments {
-                    Value::String(arguments) => Some(arguments.clone()),
-                    Value::Object(_) | Value::Array(_) => Some(arguments.to_string()),
-                    _ => None,
-                });
-            if let Some(arguments) = arguments {
-                if call.arguments.len().saturating_add(arguments.len()) > MAX_TOOL_ARGUMENT_BYTES {
+            if let Some(arguments) = function.get("arguments") {
+                let next = match arguments {
+                    Value::String(fragment) => {
+                        merge_tool_argument_fragment(&call.arguments, fragment)
+                    }
+                    Value::Object(_) | Value::Array(_) => arguments.to_string(),
+                    _ => call.arguments.clone(),
+                };
+                if next.len() > MAX_TOOL_ARGUMENT_BYTES {
                     return Err(LocalizedError::new("error.provider_tool_arguments_limit")
                         .arg("maxBytes", MAX_TOOL_ARGUMENT_BYTES));
                 }
-                call.arguments.push_str(&arguments);
+                call.arguments = next;
             }
         }
         Ok(())
@@ -1214,7 +1214,7 @@ impl ToolAccumulator {
                         LocalizedError::new("error.provider_tool_incomplete").arg("index", index)
                     );
                 }
-                let arguments = serde_json::from_str(&call.arguments).map_err(|e| {
+                let arguments = parse_tool_arguments(&call.arguments).map_err(|e| {
                     LocalizedError::new("error.provider_tool_arguments")
                         .arg("tool", &call.name)
                         .arg("detail", e)
@@ -1228,6 +1228,165 @@ impl ToolAccumulator {
             })
             .collect()
     }
+}
+
+fn merge_tool_argument_fragment(current: &str, incoming: &str) -> String {
+    if incoming.is_empty() {
+        return current.to_owned();
+    }
+    if current.is_empty() {
+        return incoming.to_owned();
+    }
+    if current == incoming || current.ends_with(incoming) {
+        return current.to_owned();
+    }
+    let next = incoming.trim_start();
+    let previous = current.trim_start();
+    // OpenAI streams deltas; several compatible gateways stream cumulative
+    // snapshots instead. A new top-level object that extends or supersedes the
+    // current buffer is a snapshot and must replace it, never become `}{`.
+    if (next.starts_with('{') || next.starts_with('['))
+        && (next.starts_with(previous)
+            || parse_tool_arguments(incoming).is_ok()
+            || parse_tool_arguments(current).is_ok())
+    {
+        return incoming.to_owned();
+    }
+    let mut merged = String::with_capacity(current.len().saturating_add(incoming.len()));
+    merged.push_str(current);
+    merged.push_str(incoming);
+    merged
+}
+
+fn parse_tool_arguments(raw: &str) -> Result<Value, serde_json::Error> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(json!({}));
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return match value {
+            Value::String(inner) => parse_tool_arguments(inner.trim()),
+            value => Ok(value),
+        };
+    }
+
+    // A few adapters wrap tool JSON in a markdown fence or append a short
+    // explanation. Accept the first complete object; dispatch still validates
+    // every required field and rejects unsafe/missing arguments.
+    let unfenced = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```JSON"))
+        .or_else(|| trimmed.strip_prefix("```"))
+        .unwrap_or(trimmed)
+        .trim();
+    let unfenced = unfenced.strip_suffix("```").unwrap_or(unfenced).trim();
+
+    // Compatible streams sometimes resend the complete argument object as a
+    // string delta (`partial`, then `complete`) or concatenate two objects.
+    // Select the largest valid object instead of treating the whole buffer as
+    // one JSON document. Native Responses, Messages and Generate Content
+    // streams still pass through the strict branch above.
+    let mut best: Option<(usize, usize, Value)> = None;
+    for (start, character) in unfenced.char_indices() {
+        if character != '{' {
+            continue;
+        }
+        let mut values =
+            serde_json::Deserializer::from_str(&unfenced[start..]).into_iter::<Value>();
+        if let Some(Ok(value @ Value::Object(_))) = values.next() {
+            let consumed = values.byte_offset();
+            if best.as_ref().is_none_or(|(best_consumed, best_start, _)| {
+                consumed > *best_consumed || consumed == *best_consumed && start > *best_start
+            }) {
+                best = Some((consumed, start, value));
+            }
+        }
+    }
+    if let Some((_, _, value)) = best {
+        return Ok(value);
+    }
+
+    let repaired = repair_tool_json(unfenced);
+    if repaired != unfenced
+        && let Ok(value @ Value::Object(_)) = serde_json::from_str::<Value>(&repaired)
+    {
+        return Ok(value);
+    }
+    serde_json::from_str(trimmed)
+}
+
+fn repair_tool_json(raw: &str) -> String {
+    let normalized = raw.replace(['“', '”'], "\"").replace(['‘', '’'], "'");
+    let normalized = if !normalized.contains('"') && normalized.contains('\'') {
+        normalized.replace('\'', "\"")
+    } else {
+        normalized
+    };
+    let chars = normalized.chars().collect::<Vec<_>>();
+    let mut cleaned = String::with_capacity(normalized.len().saturating_add(8));
+    let mut stack = Vec::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < chars.len() {
+        let character = chars[index];
+        if quoted {
+            match character {
+                '\n' => cleaned.push_str("\\n"),
+                '\r' => cleaned.push_str("\\r"),
+                '\t' => cleaned.push_str("\\t"),
+                '"' if !escaped => {
+                    quoted = false;
+                    cleaned.push(character);
+                }
+                _ => cleaned.push(character),
+            }
+            escaped = character == '\\' && !escaped;
+            index += 1;
+            continue;
+        }
+        match character {
+            '"' => {
+                quoted = true;
+                escaped = false;
+                cleaned.push(character);
+            }
+            '{' => {
+                stack.push('}');
+                cleaned.push(character);
+            }
+            '[' => {
+                stack.push(']');
+                cleaned.push(character);
+            }
+            '}' | ']' => {
+                if stack.last() == Some(&character) {
+                    stack.pop();
+                }
+                cleaned.push(character);
+            }
+            ',' => {
+                let next = chars[index + 1..]
+                    .iter()
+                    .find(|candidate| !candidate.is_whitespace());
+                if !matches!(next, Some('}' | ']')) {
+                    cleaned.push(character);
+                }
+            }
+            _ => cleaned.push(character),
+        }
+        index += 1;
+    }
+    if quoted {
+        if escaped {
+            cleaned.push('\\');
+        }
+        cleaned.push('"');
+    }
+    while let Some(closing) = stack.pop() {
+        cleaned.push(closing);
+    }
+    cleaned
 }
 
 #[derive(Debug, Default)]
@@ -2036,7 +2195,12 @@ pub(crate) async fn stream_turn(
                     }
                     && (error.is_connect()
                         || error.is_timeout()
-                        || transient_transport_signal(&request_error_detail(&error))) =>
+                        || transient_transport_signal(&request_error_detail(&error))
+                        // Custom gateways occasionally hand out one stale
+                        // pooled connection immediately after a model switch.
+                        // The request has produced no output yet, so one retry
+                        // is safe and prevents a false failed first turn.
+                        || retry == 0) =>
             {
                 let wait = Duration::from_secs(1_u64 << retry);
                 retry += 1;
@@ -2675,6 +2839,98 @@ mod tests {
         let calls = calls.finish().unwrap();
         assert_eq!(calls[0].id, "a");
         assert_eq!(calls[1].arguments["path"], "a.rs");
+    }
+
+    #[test]
+    fn complete_object_tool_arguments_replace_repeated_deltas() {
+        let mut calls = ToolAccumulator::default();
+        let first = json!({"index":0,"id":"browser-1","function":{"name":"browser","arguments":{"action":"open","url":"https://example.com"}}});
+        calls.apply(&first).unwrap();
+        calls.apply(&json!({"index":0,"function":{"arguments":{"action":"open","url":"https://example.com"}}})).unwrap();
+        let calls = calls.finish().unwrap();
+        assert_eq!(calls[0].arguments["action"], "open");
+        assert_eq!(calls[0].arguments["url"], "https://example.com");
+    }
+
+    #[test]
+    fn tool_arguments_accept_fenced_and_double_encoded_objects() {
+        assert_eq!(
+            parse_tool_arguments("```json\n{\"action\":\"snapshot\"}\n```").unwrap()["action"],
+            "snapshot"
+        );
+        assert_eq!(
+            parse_tool_arguments(r#""{\"action\":\"status\"}""#).unwrap()["action"],
+            "status"
+        );
+    }
+
+    #[test]
+    fn cumulative_string_tool_arguments_keep_the_largest_complete_object() {
+        let raw = r#"{"action":"open"}{"action":"open","url":"https://example.com"}"#;
+        let value = parse_tool_arguments(raw).unwrap();
+        assert_eq!(value["action"], "open");
+        assert_eq!(value["url"], "https://example.com");
+    }
+
+    #[test]
+    fn cumulative_tool_argument_snapshots_replace_partial_buffers() {
+        let mut calls = ToolAccumulator::default();
+        calls
+            .apply(&json!({"index":0,"id":"browser-1","function":{"name":"browser","arguments":"{\"action\":\"open\""}}))
+            .unwrap();
+        calls
+            .apply(&json!({"index":0,"function":{"arguments":"{\"action\":\"open\",\"query\":\"KnightFrame\"}"}}))
+            .unwrap();
+        let call = calls.finish().unwrap().remove(0);
+        assert_eq!(call.arguments["action"], "open");
+        assert_eq!(call.arguments["query"], "KnightFrame");
+    }
+
+    #[test]
+    fn malformed_but_unambiguous_tool_json_is_repaired() {
+        let newline =
+            parse_tool_arguments("{\"action\":\"search\",\"query\":\"Knight\\nFrame\",}").unwrap();
+        assert_eq!(newline["query"], "Knight\nFrame");
+        let incomplete = parse_tool_arguments(r#"{"action":"open","url":"example.com"#).unwrap();
+        assert_eq!(incomplete["url"], "example.com");
+        let single_quotes = parse_tool_arguments("{'action':'status'}").unwrap();
+        assert_eq!(single_quotes["action"], "status");
+    }
+
+    #[test]
+    fn browser_tool_arguments_survive_every_supported_stream_protocol() {
+        let compatible = parse_sse_data(r#"{"choices":[{"message":{"tool_calls":[{"id":"o","function":{"name":"browser","arguments":{"action":"fetch","url":"https://example.com"}}}]},"finish_reason":"tool_calls"}]}"#).unwrap();
+        let responses = [
+            parse_native_sse("openai-responses", r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"r","name":"browser"}}"#).unwrap(),
+            parse_native_sse("openai-responses", r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"action\":\"fetch\",\"url\":\"https://example.com\"}"}"#).unwrap(),
+        ];
+        let anthropic = [
+            parse_native_sse("anthropic", r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"browser"}}"#).unwrap(),
+            parse_native_sse("anthropic", r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"action\":\"fetch\",\"url\":\"https://example.com\"}"}}"#).unwrap(),
+        ];
+        let gemini = parse_native_sse("gemini", r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"browser","args":{"action":"fetch","url":"https://example.com"}}}]},"finishReason":"STOP"}]}"#).unwrap();
+
+        for deltas in [
+            compatible.tool_deltas,
+            responses
+                .into_iter()
+                .flat_map(|delta| delta.tool_deltas)
+                .collect(),
+            anthropic
+                .into_iter()
+                .flat_map(|delta| delta.tool_deltas)
+                .collect(),
+            gemini.tool_deltas,
+        ] {
+            let mut calls = ToolAccumulator::default();
+            for delta in deltas {
+                calls.apply(&delta).unwrap();
+            }
+            let call = calls.finish().unwrap().remove(0);
+            assert_eq!(call.name, "browser");
+            assert_eq!(call.arguments["action"], "fetch");
+            assert_eq!(call.arguments["url"], "https://example.com");
+        }
     }
 
     #[tokio::test]

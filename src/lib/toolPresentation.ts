@@ -35,7 +35,7 @@ export interface ToolPresentation {
 
 type JsonRecord = Record<string, unknown>;
 
-const knownToolNames = new Set(['find', 'read', 'edit', 'run', 'search', 'task']);
+const knownToolNames = new Set(['find', 'read', 'edit', 'run', 'search', 'web_search', 'web_fetch', 'browser', 'recall', 'skill', 'task']);
 const textFields = new Set(['content', 'stdout', 'stderr', 'output', 'error', 'detail']);
 
 function asRecord(value: unknown): JsonRecord | undefined {

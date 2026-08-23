@@ -1,7 +1,7 @@
 <script lang="ts">
   // 工坊 KF 预览覆盖层：真实 KnightFrame 界面上的插件组件（可交互）。
   import { fade } from 'svelte/transition';
-  import { studioPreviewComponents, studioPreviewStyle } from '../studioPreview';
+  import { studioPreviewComponents, studioPreviewRendering, studioPreviewStyle } from '../studioPreview';
   import type { StudioComponent } from '../studio';
 
   const UI_PAGES = ['workspace', 'market', 'browser', 'settings', 'graph', 'studio'];
@@ -36,7 +36,7 @@
   }
 </script>
 
-<div class="kf-preview-layer" aria-label="Plugin Studio preview">
+{#if $studioPreviewRendering}<div class="kf-preview-layer" aria-label="Plugin Studio preview">
   <div class="kf-preview-stage">
     <div class="kf-preview-surface kf-plugin-surface">
       {#each $studioPreviewComponents as item (item.id)}
@@ -67,7 +67,7 @@
   {#if banner}
     <div class="kf-preview-banner" transition:fade={{ duration: 180 }} role="status">{banner}</div>
   {/if}
-</div>
+</div>{/if}
 
 <style>
   .kf-preview-layer { position:fixed; z-index:120; inset:0; pointer-events:none; }

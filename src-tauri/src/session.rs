@@ -128,6 +128,7 @@ pub(crate) fn create_session(
         },
     };
     state.sessions.write().insert(id, session.clone());
+    crate::persistence::save(state)?;
     Ok(session)
 }
 
@@ -150,6 +151,7 @@ pub fn kf_session_rename(
         session.title = title;
         session.clone()
     };
+    crate::persistence::save(&state)?;
     let _ = app.emit(
         "kf://runtime",
         RuntimeEvent::new("session.renamed", json!({"session": snapshot})).session(&session_id),
@@ -173,6 +175,7 @@ pub fn kf_session_delete(
     if !removed {
         return Err(LocalizedError::new("error.session_not_found").arg("sessionId", &session_id));
     }
+    crate::persistence::save(&state)?;
     let _ = app.emit(
         "kf://runtime",
         RuntimeEvent::new("session.deleted", json!({"sessionId": session_id})).session(&session_id),
@@ -213,6 +216,7 @@ pub async fn kf_session_send(
                 attachments,
             });
         }
+        crate::persistence::save(&state)?;
         return Ok(TurnReceipt {
             turn_id: active.turn_id,
         });
@@ -269,6 +273,7 @@ pub async fn kf_session_send(
             content: content.clone(),
             attachments,
         });
+    crate::persistence::save(&state)?;
     let _ = app.emit(
         "kf://runtime",
         RuntimeEvent::new(
@@ -369,6 +374,7 @@ pub async fn kf_session_send(
                 );
             }
         }
+        let _ = crate::persistence::save(&state_for_stream);
         if let Err(error) = outcome {
             let kind = if error.key == "error.session_cancelled" {
                 "assistant.cancelled"
@@ -440,6 +446,7 @@ pub async fn kf_session_send(
                         renamed = Some(session.clone());
                     }
                     if let Some(session) = renamed {
+                        let _ = crate::persistence::save(&naming_state);
                         let _ = naming_app.emit(
                             "kf://runtime",
                             RuntimeEvent::new("session.renamed", json!({"session":session}))
@@ -484,6 +491,7 @@ pub fn kf_session_stop(
             RuntimeEvent::new("task.updated", json!(snapshot)).session(&session_id),
         );
     }
+    crate::persistence::save(&state)?;
     Ok(Ack { ok: true })
 }
 

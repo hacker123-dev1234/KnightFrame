@@ -21,6 +21,12 @@
   // 行情直出区：market 工具不进工作流折叠 —— K 线图是给人看的。
   $: marketCalls = (message.tools ?? []).filter((tool) => tool.name === 'market');
   $: workflowTools = (message.tools ?? []).filter((tool) => tool.name !== 'market');
+  $: compressionSkipped = (message.auxiliary ?? []).some((receipt) =>
+    receipt.role === 'requirementReducer' && receipt.status === 'skipped',
+  );
+  $: visibleAuxiliary = (message.auxiliary ?? []).filter((receipt) =>
+    !(receipt.role === 'requirementReducer' && receipt.status === 'skipped'),
+  );
 
   async function copy() {
     await navigator.clipboard.writeText(message.content);
@@ -40,9 +46,9 @@
   <div class="message-body">
     <div class="message-label">{t(message.role === 'assistant' ? 'conversation.assistant' : 'conversation.you')}</div>
 
-    {#if message.auxiliary?.length}
+    {#if visibleAuxiliary.length}
       <div class="auxiliary-stack">
-        {#each message.auxiliary as receipt (receipt.id)}<AuxiliaryCard {locale} {receipt} />{/each}
+        {#each visibleAuxiliary as receipt (receipt.id)}<AuxiliaryCard {locale} {receipt} />{/each}
       </div>
     {/if}
 
@@ -91,5 +97,6 @@
         </button>
       {/if}
     {/if}
+    {#if compressionSkipped}<small class="compression-skip-note">{t('auxiliary.compressionSkipped')}</small>{/if}
   </div>
 </article>

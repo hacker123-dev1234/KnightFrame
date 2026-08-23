@@ -57,6 +57,7 @@
 
   onMount(() => {
     syncRect();
+    if (browser?.open) void command('show').finally(syncRect);
     observer = new ResizeObserver(() => syncRect());
     if (stage) observer.observe(stage);
     window.addEventListener('resize', syncRect);
@@ -71,7 +72,7 @@
 </script>
 
 <section class="browser-page">
-  <div class="browser-tabs">
+  <div class="browser-tabs" data-tauri-drag-region>
     <button class="browser-exit" type="button" on:click={onBackToWorkspace} aria-label={t('browser.backToWork')} title={t('browser.backToWork')}><Icon name="back" size={15} /></button>
     <div class="browser-tab-strip" role="tablist" aria-label={t('browser.tabs')}>
       {#each browser?.tabs ?? [] as tab (tab.id)}

@@ -218,10 +218,11 @@
 <section class="settings-page">
   <div class="page-container settings-container">
     <button class="back-link" type="button" on:click={onBack}><Icon name="back" size={15} />{t('app.back')}</button>
-    <div class="page-intro"><span>{t('app.brand')}</span><h1>{t('settings.title')}</h1><p>{t('settings.subtitle')}</p></div>
+    <div class="page-intro" data-tauri-drag-region><span>{t('app.brand')}</span><h1>{t('settings.title')}</h1><p>{t('settings.subtitle')}</p></div>
 
-    <section class="settings-section">
-      <div class="settings-section-title"><span>01</span><h2>{t('settings.models')}</h2></div>
+    <details class="settings-section" open>
+      <summary class="settings-section-summary"><div class="settings-section-title"><span>01</span><h2>{t('settings.models')}</h2></div><Icon name="chevron" size={14} /></summary>
+      <div class="settings-section-body">
       <p class="settings-section-detail">{t(modelSelectionDisabled ? 'settings.models.busy' : 'settings.models.detail')}</p>
       <div class="provider-add-row">
         <select bind:value={templateId} aria-label={t('settings.providers.template')}>{#each providerTemplates as template}<option value={template.id}>{template.name} · {template.adapter}</option>{/each}</select>
@@ -231,7 +232,7 @@
       {#if providerNotice}<p class="provider-notice">{providerNotice}</p>{/if}
       <div class="provider-profiles">
         {#each profiles as profile (profile.id)}
-          <details class="provider-profile" open>
+          <details class="provider-profile">
             <summary><span class="model-status online"></span><strong>{profile.name}</strong><code>{profile.adapter}</code><small>{profile.models.length} {t('settings.providers.models')}</small></summary>
             <div class="provider-form">
               <label><span>{t('settings.providers.name')}</span><input value={profile.name} on:change={(event) => patchProvider(profile.id, { name: event.currentTarget.value })} /></label>
@@ -293,10 +294,12 @@
           {/each}
         </div>
       {:else}<div class="settings-empty">{t('settings.models.empty')}</div>{/if}
-    </section>
+      </div>
+    </details>
 
-    <section class="settings-section">
-      <div class="settings-section-title"><span>02</span><h2>{t('settings.auxiliary')}</h2></div>
+    <details class="settings-section">
+      <summary class="settings-section-summary"><div class="settings-section-title"><span>02</span><h2>{t('settings.auxiliary')}</h2></div><Icon name="chevron" size={14} /></summary>
+      <div class="settings-section-body">
       <p class="settings-section-detail">{t('settings.auxiliary.detail')}</p>
       <div class="auxiliary-source-picker" role="group" aria-label={t('settings.auxiliary.source')}>
         <button class:active={auxiliarySource === 'local'} type="button" on:click={() => chooseAuxiliarySource('local')}>
@@ -352,10 +355,12 @@
           {/each}
         </div>
       {/if}
-    </section>
+      </div>
+    </details>
 
-    <section class="settings-section">
-      <div class="settings-section-title"><span>03</span><h2>{t('settings.behavior')}</h2></div>
+    <details class="settings-section">
+      <summary class="settings-section-summary"><div class="settings-section-title"><span>03</span><h2>{t('settings.behavior')}</h2></div><Icon name="chevron" size={14} /></summary>
+      <div class="settings-section-body">
       <div class="settings-list">
         <div class="setting-row avatar-row">
           <div><strong>{t('settings.avatar')}</strong><p>{t('settings.avatar.detail')}</p></div>
@@ -380,6 +385,11 @@
         <label class="setting-row">
           <div><strong>{t('settings.caveman')}</strong><p>{t('settings.caveman.detail')}</p></div>
           <input type="checkbox" checked={settings.cavemanMode === 'lite'} disabled={saving} on:change={(event) => update({ cavemanMode: event.currentTarget.checked ? 'lite' : 'off' })} />
+          <span class="switch" aria-hidden="true"></span>
+        </label>
+        <label class="setting-row">
+          <div><strong>{t('settings.memory')}</strong><p>{t('settings.memory.detail')}</p></div>
+          <input type="checkbox" checked={settings.memoryEnabled === true} disabled={saving} on:change={(event) => update({ memoryEnabled: event.currentTarget.checked })} />
           <span class="switch" aria-hidden="true"></span>
         </label>
         <div class="setting-row locale-row">
@@ -408,6 +418,7 @@
           </div>
         </div>
       </div>
-    </section>
+      </div>
+    </details>
   </div>
 </section>

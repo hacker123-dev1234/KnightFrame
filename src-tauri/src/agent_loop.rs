@@ -32,6 +32,12 @@ const MAX_BATCH_ITEMS: usize = 8;
 const DEFAULT_BATCH_READ_LINES: usize = 200;
 const REQUIREMENT_REDUCER_THRESHOLD_TOKENS: u64 = 500;
 const PROJECT_CONTEXT_SOURCE: &str = "project-graph";
+const MEMORY_CONTEXT_SOURCE: &str = "long-term-memory";
+const MEMORY_CONTEXT_CLEARED: &str =
+    "Long-term memory is unavailable for this request. Earlier memory snapshots no longer apply.";
+const DEFAULT_HISTORY_BUDGET_BYTES: usize = 512 * 1024;
+const MIN_HISTORY_BUDGET_BYTES: usize = 128 * 1024;
+const MAX_HISTORY_BUDGET_BYTES: usize = 1024 * 1024;
 const PROJECT_CONTEXT_CLEARED: &str =
     "Current project graph: unavailable. Earlier project-graph snapshots no longer apply.";
 const CLARIFY_TURN: &str =
@@ -42,7 +48,7 @@ const CONTINUE_RESPONSE: &str =
     "Continue exactly where the response ended. Do not restart or summarize.";
 const FINALIZE_RESPONSE: &str = "Reasoning was received without a final answer. Return the final answer now; do not repeat the reasoning.";
 const TOOL_CAPABILITY_RECOVERY: &str = "The provider declared a tool call without its payload. Retry the intended action now with exactly one exposed tool. Use edit for an existing file and run only after the edit.";
-const SYSTEM: &str = "You are KnightFrame, a coding agent. Start from the project graph. Batch independent find/search/read queries before shell exploration, then edit exact unique fragments. Tool receipts use short refs; call recall only when missing details matter. Do not repeat unchanged reads or searches; every run executes fresh, so rerun freely whenever fresh output matters. Keep the task plan current for multi-step work. Run programs, builds, and tests; shell remains available. Paths may be relative or absolute. Never invent results. Market and trading questions are analysis only — never trade, order, change positions, or purchase.";
+const SYSTEM: &str = "You are KnightFrame, a coding agent. Start from the project graph. Batch independent find/search/read queries before shell exploration, then edit exact unique fragments. For internet discovery use web_search; for a known public URL use web_fetch. Use browser only when the user explicitly asks to see or interact with the page, or when JavaScript, authentication, or UI actions are required. Never open Browser for a simple search/fetch. Use recall only for a receipt marked completeness=reference when its omitted detail blocks work; never recall complete/partial receipts or web pages. Do not repeat unchanged reads or searches; every run executes fresh, so rerun freely whenever fresh output matters. Keep the task plan current for multi-step work. Run programs, builds, and tests; shell remains available. Paths may be relative or absolute. Verify time-sensitive web claims from primary sources and include their URLs. Never invent results. Market and trading questions are analysis only — never trade, order, change positions, or purchase.";
 const CAVEMAN_LITE: &str = "Use the minimum necessary words. No pleasantries, request restatement, or unnecessary sections. Preserve technical detail and verification evidence.";
 
 #[derive(Clone)]
@@ -105,14 +111,24 @@ impl ToolRegistry for BuiltinRegistry {
             ]);
         }
         tools.push(spec(
+            "web_search",
+            "Search the public web without opening Browser. Use for discovery; the backend chooses a reachable regional engine and never selects unavailable Google. Fetch the best source URLs next.",
+            json!({"type":"object","properties":{"query":{"type":"string","minLength":1},"engine":{"type":"string","enum":["auto","bing","baidu","google","duckduckgo"]},"offset":{"type":"integer","minimum":0}},"required":["query"]}),
+        ));
+        tools.push(spec(
+            "web_fetch",
+            "Fetch and extract a known public URL without opening Browser. Use offset only when the prior result provides nextOffset.",
+            json!({"type":"object","properties":{"url":{"type":"string","minLength":1},"offset":{"type":"integer","minimum":0}},"required":["url"]}),
+        ));
+        tools.push(spec(
             "recall",
-            "Load a prior tool result by its short ref only when the compact receipt is insufficient.",
+            "Load a prior result only when its receipt says completeness=reference and the omitted detail blocks work. Never use for complete/partial results or browser pages.",
             json!({"type":"object","properties":{"reference":{"type":"string","minLength":1}},"required":["reference"]}),
         ));
         tools.push(spec(
             "browser",
-            "Control the shared in-window browser. snapshot reads the rendered page and returns compact text plus refs (e1...). Use refs with click/fill/select/hover/press. fetch reads a URL without opening it. Tab, navigation, status, focus, stop, scroll, and close actions are supported.",
-            json!({"type":"object","properties":{"action":{"type":"string","enum":["fetch","snapshot","open","new-tab","select-tab","close-tab","navigate","back","forward","refresh","stop","close","focus","status","click","fill","select","hover","press","scroll"]},"url":{"type":"string"},"tabId":{"type":"string"},"offset":{"type":"integer","minimum":0,"description":"Continue from a prior fetch nextOffset."},"ref":{"type":"string","description":"Short element ref returned by fetch/snapshot."},"selector":{"type":"string","description":"Optional CSS selector for interaction."},"value":{"type":"string","description":"Text or option value for fill/select."},"key":{"type":"string","description":"Key for press; default Enter."},"y":{"type":"integer","description":"Scroll pixels; negative moves up."}},"required":["action"]}),
+            "Control the shared in-window browser. open/search shows it; snapshot returns compact text and refs; fetch reads without opening. Use refs for interactions. Compatible aliases and nested act requests are accepted.",
+            json!({"type":"object","properties":{"action":{"type":"string","enum":["fetch","search","snapshot","open","new-tab","select-tab","close-tab","navigate","back","forward","refresh","stop","close","focus","status","tabs","act","click","fill","select","hover","press","scroll"]},"url":{"type":"string"},"targetUrl":{"type":"string","description":"Alias for url."},"query":{"type":"string","description":"Search text for search/open."},"tabId":{"type":"string"},"targetId":{"type":"string","description":"Alias for tabId."},"kind":{"type":"string","enum":["click","fill","type","select","hover","press","scroll"]},"offset":{"type":"integer","minimum":0,"description":"Continue from a prior fetch nextOffset."},"ref":{"type":"string","description":"Short element ref returned by fetch/snapshot."},"selector":{"type":"string","description":"Optional CSS selector for interaction."},"value":{"type":"string","description":"Text or option value for fill/select."},"text":{"type":"string","description":"Alias for value."},"key":{"type":"string","description":"Key for press; default Enter."},"y":{"type":"integer","description":"Scroll pixels; negative moves up."},"request":{"type":"object","description":"Optional nested interaction payload."}},"required":["action"]}),
         ));
         tools.push(spec(
             "market",
@@ -153,11 +169,13 @@ fn tool_order(name: &str) -> usize {
         "edit" => 3,
         "write" => 4,
         "run" => 5,
-        "browser" => 6,
-        "market" => 7,
-        "recall" => 8,
-        "skill" => 9,
-        "task" => 10,
+        "web_search" => 6,
+        "web_fetch" => 7,
+        "browser" => 8,
+        "market" => 9,
+        "recall" => 10,
+        "skill" => 11,
+        "task" => 12,
         _ => usize::MAX,
     }
 }
@@ -331,6 +349,159 @@ fn sync_project_context(state: &AppState, session_id: &str, root: Option<&str>) 
         content: snapshot.clone(),
     });
     Some(snapshot)
+}
+
+fn next_memory_context_snapshot(
+    history: &[HistoryItem],
+    current: Option<String>,
+) -> Option<String> {
+    let retained = history.iter().rev().find_map(|item| match item {
+        HistoryItem::Context { source, content } if source == MEMORY_CONTEXT_SOURCE => {
+            Some(content.as_str())
+        }
+        _ => None,
+    });
+    let snapshot = match current {
+        Some(context) => format!(
+            "Current long-term memory. This snapshot supersedes earlier long-term-memory snapshots.\n\n{context}"
+        ),
+        None if retained.is_some() && retained != Some(MEMORY_CONTEXT_CLEARED) => {
+            MEMORY_CONTEXT_CLEARED.to_owned()
+        }
+        None => return None,
+    };
+    (retained != Some(snapshot.as_str())).then_some(snapshot)
+}
+
+fn sync_memory_context(
+    state: &AppState,
+    session_id: &str,
+    root: Option<&str>,
+    prompt: &str,
+) -> Option<String> {
+    let current = crate::memory::relevant_context(state, root, prompt);
+    let mut histories = state.histories.write();
+    let history = histories.entry(session_id.to_owned()).or_default();
+    let snapshot = next_memory_context_snapshot(history, current)?;
+    history.push(HistoryItem::Context {
+        source: MEMORY_CONTEXT_SOURCE.to_owned(),
+        content: snapshot.clone(),
+    });
+    Some(snapshot)
+}
+
+fn history_item_bytes(item: &HistoryItem) -> usize {
+    serde_json::to_vec(item).map_or(0, |bytes| bytes.len())
+}
+
+fn history_budget(context_limit: Option<u64>) -> usize {
+    context_limit
+        .map(|tokens| tokens.saturating_mul(4).saturating_mul(68) / 100)
+        .map(|bytes| {
+            bytes.clamp(
+                MIN_HISTORY_BUDGET_BYTES as u64,
+                MAX_HISTORY_BUDGET_BYTES as u64,
+            ) as usize
+        })
+        .unwrap_or(DEFAULT_HISTORY_BUDGET_BYTES)
+}
+
+fn compact_line(content: &str, limit: usize) -> String {
+    let line = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut result = line.chars().take(limit).collect::<String>();
+    if line.chars().count() > limit {
+        result.push('…');
+    }
+    result
+}
+
+fn summarize_evicted(evicted: &[HistoryItem]) -> String {
+    let mut output = String::from(
+        "Compacted conversation history. Preserve these facts; omitted raw turns are superseded by this summary:\n",
+    );
+    for item in evicted {
+        let line = match item {
+            HistoryItem::User { content, .. } => format!("- user: {}", compact_line(content, 240)),
+            HistoryItem::Assistant { content, .. } if !content.trim().is_empty() => {
+                format!("- result: {}", compact_line(content, 200))
+            }
+            HistoryItem::Context { source, content } if source == "conversation-compaction" => {
+                format!("- prior: {}", compact_line(content, 600))
+            }
+            HistoryItem::ToolCall { name, .. }
+                if matches!(name.as_str(), "edit" | "write" | "run") =>
+            {
+                format!("- tool: {name}")
+            }
+            HistoryItem::ToolResult { projection, .. }
+                if projection.get("status").and_then(Value::as_str) == Some("failed") =>
+            {
+                format!(
+                    "- tool failure: {}",
+                    compact_line(&projection.to_string(), 180)
+                )
+            }
+            _ => continue,
+        };
+        if output.len().saturating_add(line.len()) > 16 * 1024 {
+            output.push_str("- earlier details omitted\n");
+            break;
+        }
+        output.push_str(&line);
+        output.push('\n');
+    }
+    output
+}
+
+fn compact_history(
+    state: &AppState,
+    session_id: &str,
+    root: Option<&str>,
+    budget: usize,
+) -> KfResult<Option<crate::memory::MemoryCuration>> {
+    let (evicted, summary) = {
+        let mut histories = state.histories.write();
+        let history = histories.entry(session_id.to_owned()).or_default();
+        let total = history.iter().map(history_item_bytes).sum::<usize>();
+        let user_count = history
+            .iter()
+            .filter(|item| matches!(item, HistoryItem::User { .. }))
+            .count();
+        if total <= budget || user_count <= 4 {
+            return Ok(None);
+        }
+        let target = budget.saturating_mul(60) / 100;
+        let mut retained_bytes = 0_usize;
+        let mut retained_users = 0_usize;
+        let mut retain_start = 0_usize;
+        for (index, item) in history.iter().enumerate().rev() {
+            retained_bytes = retained_bytes.saturating_add(history_item_bytes(item));
+            if matches!(item, HistoryItem::User { .. }) {
+                retained_users += 1;
+                retain_start = index;
+                if retained_users >= 4 && retained_bytes >= target {
+                    break;
+                }
+            }
+        }
+        if retain_start == 0 {
+            return Ok(None);
+        }
+        let evicted = history[..retain_start].to_vec();
+        let summary = summarize_evicted(&evicted);
+        let mut compacted = Vec::with_capacity(history.len() - retain_start + 1);
+        compacted.push(HistoryItem::Context {
+            source: "conversation-compaction".into(),
+            content: summary.clone(),
+        });
+        compacted.extend_from_slice(&history[retain_start..]);
+        *history = compacted;
+        (evicted, summary)
+    };
+    let report = crate::memory::curate_evicted(state, root, &evicted)?;
+    crate::persistence::save(state)?;
+    let _ = summary;
+    Ok(Some(report))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -646,8 +817,128 @@ fn project_tool_artifact(call: &ToolCall, artifact_id: String, value: &Value) ->
             let bars = value.get("bars").and_then(Value::as_u64).unwrap_or(0) as usize;
             projection("completed", summary, None, bars, false, artifact_id)
         }
+        "web_search" | "web_fetch" => project_page_artifact(call.name.as_str(), artifact_id, value),
+        "browser" => project_browser_artifact(artifact_id, value),
         _ => project_artifact(artifact_id, value),
     }
+}
+
+fn project_browser_artifact(artifact_id: String, value: &Value) -> ToolProjection {
+    project_page_artifact("browser", artifact_id, value)
+}
+
+fn project_page_artifact(tool: &str, artifact_id: String, value: &Value) -> ToolProjection {
+    let url = value.get("url").and_then(Value::as_str).unwrap_or_default();
+    let title = value
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let text = value
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut summary = String::new();
+    if !title.is_empty() {
+        summary.push_str(title);
+    }
+    if !url.is_empty() {
+        if !summary.is_empty() {
+            summary.push('\n');
+        }
+        summary.push_str(url);
+    }
+    if !text.trim().is_empty() {
+        if !summary.is_empty() {
+            summary.push('\n');
+        }
+        summary.push_str(text.trim());
+    }
+    if let Some(elements) = value.get("elements").and_then(Value::as_array)
+        && !elements.is_empty()
+    {
+        summary.push_str("\nElements:");
+        for element in elements {
+            let reference = element.get("ref").and_then(Value::as_str).unwrap_or("?");
+            let role = element
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("element");
+            let name = element.get("name").and_then(Value::as_str).unwrap_or("");
+            let hint = element.get("hint").and_then(Value::as_str).unwrap_or("");
+            let _ = write!(summary, "\n{reference} {role} {name}");
+            if !hint.is_empty() {
+                let _ = write!(summary, " [{hint}]");
+            }
+        }
+    }
+    if let Some(next) = value.get("nextOffset").and_then(Value::as_u64) {
+        let continuation = if tool == "browser" {
+            "browser fetch"
+        } else {
+            "web_fetch"
+        };
+        let _ = write!(
+            summary,
+            "\nMore text: {continuation} url={url} offset={next}"
+        );
+    }
+    if summary.is_empty() {
+        let action = value
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("command");
+        summary = format!("Browser {action} completed.");
+    } else if tool == "browser"
+        && text.is_empty()
+        && value.get("open").and_then(Value::as_bool) == Some(true)
+    {
+        summary.push_str("\nPage opened; call browser snapshot once after loading to read it.");
+    }
+    let total = value
+        .get("textChars")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(summary.len());
+    let source_truncated = value
+        .get("omittedChars")
+        .and_then(Value::as_u64)
+        .is_some_and(|value| value > 0)
+        || value
+            .get("elementsOmitted")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value > 0);
+    projection(
+        "completed",
+        summary,
+        None,
+        total,
+        source_truncated,
+        artifact_id,
+    )
+}
+
+fn store_raw_web_artifact(state: &AppState, result: &mut Value) {
+    let Some(raw) = result
+        .get("_rawHtml")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    let raw_id = format!("raw-{}", uuid::Uuid::new_v4().simple());
+    let page_url = result
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    state.artifacts.write().insert(
+        raw_id.clone(),
+        json!({ "type": "html", "url": page_url, "content": raw }),
+    );
+    if let Some(map) = result.as_object_mut() {
+        map.remove("_rawHtml");
+    }
+    result["artifact"] = json!(raw_id);
 }
 
 fn project_batch_tool_artifact(
@@ -1027,6 +1318,27 @@ async fn dispatch(
             root.ok_or_else(|| LocalizedError::new("error.project_none"))?,
             args,
         )?,
+        "web_search" => {
+            let mut result = crate::web::search(
+                &state.client,
+                string(args, "query")?,
+                args.get("engine").and_then(Value::as_str),
+                args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize,
+            )
+            .await?;
+            store_raw_web_artifact(state, &mut result);
+            result
+        }
+        "web_fetch" => {
+            let mut result = crate::web::fetch(
+                &state.client,
+                string(args, "url")?,
+                args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize,
+            )
+            .await?;
+            store_raw_web_artifact(state, &mut result);
+            result
+        }
         "recall" => {
             let reference = string(args, "reference")?;
             let indexes = state.tool_observations.read();
@@ -1035,12 +1347,21 @@ async fn dispatch(
                 .and_then(|index| index.by_reference.get(reference))
                 .ok_or_else(|| {
                     LocalizedError::new("error.tool_argument").arg("field", "reference")
+                })?
+                .clone();
+            let prior: ToolProjection = serde_json::from_value(observation.projection.clone())
+                .map_err(|error| {
+                    LocalizedError::new("error.tool_argument")
+                        .arg("field", "reference")
+                        .arg("detail", error)
                 })?;
             json!({
-                "content": serde_json::to_string(&observation.projection).unwrap_or_default(),
+                "content": prior.summary,
                 "reference": &observation.reference,
                 "tool": &observation.tool,
                 "artifactId": &observation.artifact_id,
+                "total": prior.total,
+                "truncated": prior.truncated,
             })
         }
         "task" => {
@@ -1108,33 +1429,21 @@ async fn dispatch(
             market_snapshot(&frame, &resolved_source)
         }
         "browser" => {
-            let action = string(args, "action")?;
-            let url = args.get("url").and_then(Value::as_str);
+            let (action, url, normalized) = normalize_browser_arguments(args)?;
             if action == "fetch" {
-                let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let offset = normalized
+                    .get("offset")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 let mut result = crate::browser::agent_fetch_page(
                     &state.client,
-                    url.ok_or_else(|| LocalizedError::new("error.browser_url_required"))?,
+                    url.as_deref()
+                        .ok_or_else(|| LocalizedError::new("error.browser_url_required"))?,
                     offset,
                     4000,
                 )
                 .await?;
-                // 原始 HTML 剥离出投影，存为独立 artifact（RawArtifact 本地完整）
-                if let Some(raw) = result.get("_rawHtml").and_then(Value::as_str) {
-                    let raw_id = format!("raw-{}", uuid::Uuid::new_v4().simple());
-                    let page_url = result
-                        .get("url")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    state.artifacts.write().insert(
-                        raw_id.clone(),
-                        json!({ "type": "html", "url": page_url, "content": raw }),
-                    );
-                    if let Some(map) = result.as_object_mut() {
-                        map.remove("_rawHtml");
-                    }
-                    result["artifact"] = json!(raw_id);
-                }
+                store_raw_web_artifact(state, &mut result);
                 result
             } else {
                 let app = sink
@@ -1144,9 +1453,9 @@ async fn dispatch(
                 crate::browser::agent_browser(
                     &app,
                     &state.client,
-                    action,
-                    url,
-                    args.as_object().unwrap_or(&Default::default()),
+                    &action,
+                    url.as_deref(),
+                    &normalized,
                 )
                 .await?
             }
@@ -1437,6 +1746,78 @@ fn optional_text_alias<'a>(value: &'a Value, keys: &[&str]) -> KfResult<Option<&
         }
     }
     Ok(None)
+}
+
+/// Keep the public browser schema flat for weaker/compatible models, then
+/// accept the common OpenAI, Anthropic, Gemini and OpenClaw argument shapes at
+/// runtime. `target` is deliberately not treated as a URL: other harnesses use
+/// it for execution location (`host`/`sandbox`).
+fn normalize_browser_arguments(
+    value: &Value,
+) -> KfResult<(String, Option<String>, serde_json::Map<String, Value>)> {
+    let mut args = value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| LocalizedError::new("error.tool_argument").arg("field", "browser"))?;
+
+    if let Some(Value::Object(request)) = args.get("request").cloned() {
+        for (key, value) in request {
+            args.entry(key).or_insert(value);
+        }
+    }
+    for (alias, canonical) in [
+        ("targetUrl", "url"),
+        ("href", "url"),
+        ("targetId", "tabId"),
+        ("text", "value"),
+    ] {
+        if !args.contains_key(canonical)
+            && let Some(value) = args.get(alias).cloned()
+        {
+            args.insert(canonical.to_string(), value);
+        }
+    }
+
+    let value = Value::Object(args.clone());
+    let url = optional_text_alias(&value, &["url"])?;
+    let query = optional_text_alias(&value, &["query"])?;
+    let raw_action = optional_text_alias(&value, &["action", "operation"])?
+        .or_else(|| url.map(|_| "fetch"))
+        .or_else(|| query.map(|_| "search"))
+        .ok_or_else(|| LocalizedError::new("error.tool_argument").arg("field", "action"))?;
+    let normalized_action = raw_action.trim().to_ascii_lowercase();
+    let mut action = match normalized_action.as_str() {
+        "goto" | "go-to" => "navigate",
+        "reload" => "refresh",
+        "type" => "fill",
+        "new_tab" | "newtab" => "new-tab",
+        "select_tab" | "switch-tab" => "select-tab",
+        "close_tab" => "close-tab",
+        "tabs" => "status",
+        other => other,
+    }
+    .to_string();
+    if action == "act" {
+        action = optional_text_alias(&value, &["kind"])?
+            .ok_or_else(|| LocalizedError::new("error.tool_argument").arg("field", "kind"))?
+            .trim()
+            .to_ascii_lowercase();
+        if action == "type" {
+            action = "fill".to_string();
+        }
+    }
+
+    let address = if action == "search" {
+        action = "open".to_string();
+        query.or(url)
+    } else {
+        url.or(query)
+    }
+    .map(str::to_owned);
+    if let Some(address) = &address {
+        args.insert("url".to_string(), Value::String(address.clone()));
+    }
+    Ok((action, address, args))
 }
 
 fn run_arguments(value: &Value) -> KfResult<Vec<String>> {
@@ -1890,6 +2271,7 @@ pub(crate) async fn run_with_sink(
     let configured_model = profile
         .as_ref()
         .and_then(|profile| profile.models.iter().find(|model| model.id == model_id));
+    let context_limit = configured_model.and_then(|model| model.context_limit);
     let thinking_enabled = configured_model.is_some_and(|model| model.thinking_enabled);
     let thinking_effort = configured_model
         .map(|model| model.thinking_effort.as_str())
@@ -1943,7 +2325,6 @@ pub(crate) async fn run_with_sink(
             .insert(format!("skill:{turn_id}"), receipt.clone());
         sink.emit(RuntimeEvent::new("skill.activated", receipt).session(&session_id));
     }
-    sync_project_context(&state, &session_id, root.as_deref());
     if let Some(directory) = skill_route.directory() {
         record_context(
             &state,
@@ -1955,6 +2336,26 @@ pub(crate) async fn run_with_sink(
     if clarify {
         record_context(&state, &session_id, "turn-clarify", CLARIFY_TURN.to_owned());
     }
+    if let Some(report) = compact_history(
+        &state,
+        &session_id,
+        root.as_deref(),
+        history_budget(context_limit),
+    )? {
+        sink.emit(
+            RuntimeEvent::new(
+                "context.compacted",
+                json!({
+                    "discarded": report.discarded,
+                    "saved": report.saved,
+                    "axioms": report.axioms,
+                }),
+            )
+            .session(&session_id),
+        );
+    }
+    sync_project_context(&state, &session_id, root.as_deref());
+    sync_memory_context(&state, &session_id, root.as_deref(), &content);
     let history = state
         .histories
         .read()
@@ -2395,8 +2796,19 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "find", "search", "read", "edit", "write", "run", "browser", "market", "recall",
-                "skill", "task"
+                "find",
+                "search",
+                "read",
+                "edit",
+                "write",
+                "run",
+                "web_search",
+                "web_fetch",
+                "browser",
+                "market",
+                "recall",
+                "skill",
+                "task"
             ]
         );
         assert_eq!(registry.discover("read")[0].name, "read");
@@ -2520,6 +2932,62 @@ mod tests {
             },
         ];
         assert!(next_project_context_snapshot(&cleared, None).is_none());
+    }
+
+    #[test]
+    fn real_history_compaction_keeps_recent_turns_and_curates_memory_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::new(crate::types::SettingsSnapshot {
+            memory_enabled: true,
+            ..Default::default()
+        });
+        state.set_storage_dir(directory.path().to_path_buf());
+        let mut history = Vec::new();
+        for index in 0..6 {
+            let content = if index == 0 {
+                "以后默认先使用项目索引，再读取精确范围。".repeat(20)
+            } else {
+                format!("ordinary request {index} {}", "x".repeat(180))
+            };
+            history.push(HistoryItem::User {
+                turn_id: format!("turn-{index}"),
+                content,
+                attachments: Vec::new(),
+            });
+            history.push(HistoryItem::Assistant {
+                turn_id: format!("turn-{index}"),
+                content: format!("done {index}"),
+                reasoning: String::new(),
+            });
+        }
+        state.histories.write().insert("session".into(), history);
+
+        let report = compact_history(&state, "session", Some("D:/project"), 800)
+            .unwrap()
+            .expect("oversized history should compact");
+        let compacted = state.histories.read()["session"].clone();
+        assert!(matches!(
+            compacted.first(),
+            Some(HistoryItem::Context { source, .. }) if source == "conversation-compaction"
+        ));
+        assert_eq!(
+            compacted
+                .iter()
+                .filter(|item| matches!(item, HistoryItem::User { .. }))
+                .count(),
+            4
+        );
+        assert_eq!(report.saved, 1);
+        assert_eq!(state.memory.read().entries.len(), 1);
+    }
+
+    #[test]
+    fn unchanged_memory_snapshot_is_not_appended_twice() {
+        let history = vec![HistoryItem::Context {
+            source: MEMORY_CONTEXT_SOURCE.into(),
+            content: "Current long-term memory. This snapshot supersedes earlier long-term-memory snapshots.\n\nrule".into(),
+        }];
+        assert!(next_memory_context_snapshot(&history, Some("rule".into())).is_none());
     }
 
     struct NoopSink;
@@ -2792,6 +3260,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn browser_arguments_accept_flat_nested_and_openclaw_shapes() {
+        let (action, url, args) = normalize_browser_arguments(&json!({
+            "action":"act",
+            "request":{"kind":"type","targetId":"tab-1","ref":"e2","text":"KnightFrame"}
+        }))
+        .unwrap();
+        assert_eq!(action, "fill");
+        assert_eq!(url, None);
+        assert_eq!(args["tabId"], "tab-1");
+        assert_eq!(args["value"], "KnightFrame");
+
+        let (action, url, _) = normalize_browser_arguments(&json!({
+            "action":"search",
+            "query":"KnightFrame browser"
+        }))
+        .unwrap();
+        assert_eq!(action, "open");
+        assert_eq!(url.as_deref(), Some("KnightFrame browser"));
+
+        let (action, url, _) = normalize_browser_arguments(&json!({
+            "operation":"goto",
+            "targetUrl":"https://example.com",
+            "target":"host"
+        }))
+        .unwrap();
+        assert_eq!(action, "navigate");
+        assert_eq!(url.as_deref(), Some("https://example.com"));
+    }
+
     #[tokio::test]
     async fn aliased_edit_and_command_execute_end_to_end() {
         let directory = tempfile::tempdir().unwrap();
@@ -2944,8 +3442,19 @@ mod tests {
             workspace_available: false,
         };
         let names: Vec<_> = registry.active().iter().map(|tool| tool.name).collect();
-        // browser/market 不依赖工作区，无项目时仍可用（fetch/行情快照无需 root）
-        assert_eq!(names, vec!["browser", "market", "recall", "skill", "task"]);
+        // 联网检索、浏览器和行情不依赖工作区。
+        assert_eq!(
+            names,
+            vec![
+                "web_search",
+                "web_fetch",
+                "browser",
+                "market",
+                "recall",
+                "skill",
+                "task"
+            ]
+        );
         assert!(!SYSTEM.contains("project="));
     }
 
@@ -2962,8 +3471,19 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "find", "search", "read", "edit", "write", "run", "browser", "market", "recall",
-                "skill", "task"
+                "find",
+                "search",
+                "read",
+                "edit",
+                "write",
+                "run",
+                "web_search",
+                "web_fetch",
+                "browser",
+                "market",
+                "recall",
+                "skill",
+                "task"
             ]
         );
         // Whole-file writes have side effects; they must never be served from
@@ -2977,6 +3497,178 @@ mod tests {
         assert!(projection.truncated);
         assert!(projection.summary.len() <= MAX_PROJECTION_BYTES);
         assert_eq!(projection.completeness, "partial");
+    }
+
+    #[test]
+    fn browser_projection_exposes_page_text_and_element_refs() {
+        let projection = project_browser_artifact(
+            "artifact".into(),
+            &json!({
+                "url":"https://example.com/search?q=doctor",
+                "title":"Search results",
+                "text":"First result\nSecond result",
+                "textChars":26,
+                "elements":[{"ref":"e1","role":"link","name":"First result","hint":"example.com/1"}],
+                "elementsOmitted":0,
+                "omittedChars":0,
+                "complete":true
+            }),
+        );
+        assert!(projection.summary.contains("First result\nSecond result"));
+        assert!(projection.summary.contains("e1 link First result"));
+        assert!(!projection.summary.contains("Result stored locally"));
+        assert_eq!(projection.completeness, "complete");
+    }
+
+    #[test]
+    fn browser_open_projection_gives_one_clear_followup() {
+        let projection = project_browser_artifact(
+            "artifact".into(),
+            &json!({"open":true,"url":"https://example.com","title":"Example"}),
+        );
+        assert!(projection.summary.contains("call browser snapshot once"));
+        assert!(!projection.summary.contains('{'));
+    }
+
+    #[tokio::test]
+    async fn recall_returns_prior_summary_instead_of_projection_json() {
+        let state = AppState::new(Default::default());
+        let prior = ToolProjection {
+            status: "completed".into(),
+            summary: "Visible browser result".into(),
+            exit_code: None,
+            error_key: None,
+            completeness: "complete".into(),
+            total: 22,
+            truncated: false,
+            artifact_id: "o1".into(),
+        };
+        state
+            .tool_observations
+            .write()
+            .entry("session".into())
+            .or_default()
+            .by_reference
+            .insert(
+                "o1".into(),
+                ToolObservation {
+                    reference: "o1".into(),
+                    epoch: 0,
+                    tool: "browser".into(),
+                    projection: json!(prior),
+                    artifact_id: "artifact-browser".into(),
+                    successful: true,
+                },
+            );
+        let call = ToolCall {
+            index: 0,
+            id: "recall-1".into(),
+            name: "recall".into(),
+            arguments: json!({"reference":"o1"}),
+        };
+        let projection = dispatch(
+            &NoopSink,
+            &state,
+            "session",
+            None,
+            &call,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(projection.summary, "Visible browser result");
+        assert!(!projection.summary.contains("artifactId"));
+    }
+
+    #[tokio::test]
+    async fn browser_fetch_dispatch_returns_real_page_text_to_the_model() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            let body = r#"<html><head><title>Doctor search</title></head><body><a href="/profile">Psychiatry Director Guo</a><p>Hospital profile and clinic schedule.</p></body></html>"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let state = AppState::new(Default::default());
+        let call = ToolCall {
+            index: 0,
+            id: "browser-fetch-1".into(),
+            name: "browser".into(),
+            arguments: json!({
+                "action":"fetch",
+                "url":format!("http://{address}/search?q=doctor")
+            }),
+        };
+        let projection = dispatch(
+            &NoopSink,
+            &state,
+            "session",
+            None,
+            &call,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert!(projection.summary.contains("Doctor search"));
+        assert!(projection.summary.contains("Psychiatry Director Guo"));
+        assert!(
+            projection
+                .summary
+                .contains("e1 link Psychiatry Director Guo")
+        );
+        assert!(!projection.summary.contains("Result stored locally"));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_reads_without_requiring_a_browser_window() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let body = "<html><head><title>Primary source</title></head><body>Verified public documentation content.</body></html>";
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let state = AppState::new(Default::default());
+        let call = ToolCall {
+            index: 0,
+            id: "web-fetch-1".into(),
+            name: "web_fetch".into(),
+            arguments: json!({"url":format!("http://{address}/docs")}),
+        };
+        let projection = dispatch(
+            &NoopSink,
+            &state,
+            "session",
+            None,
+            &call,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert!(projection.summary.contains("Primary source"));
+        assert!(projection.summary.contains("Verified public documentation"));
     }
 
     #[test]

@@ -432,7 +432,10 @@
   function postPreviewLayout() {
     if (target !== 'knightframe') return;
     const frame = canvas?.querySelector('iframe.studio-host-frame') as HTMLIFrameElement | null;
-    frame?.contentWindow?.postMessage({ type: 'kf-studio-layout', components: components.filter((item) => !item.hidden) }, '*');
+    // 工坊模式由父级编辑层渲染组件；预览模式才交给 iframe 内的真实
+    // KnightFrame 覆盖层。两层同时渲染会在缩放时形成明显的重影。
+    const previewComponents = preview ? components.filter((item) => !item.hidden) : [];
+    frame?.contentWindow?.postMessage({ type: 'kf-studio-layout', active: preview, components: previewComponents }, '*');
   }
   function handlePreviewMessage(event: MessageEvent) {
     const data = event.data as { type?: string; url?: string; page?: string };
@@ -677,8 +680,8 @@
     preview = !preview;
     if (preview) {
       selectedId = undefined; editingId = undefined; closeContextMenu();
-      postPreviewLayout(); // 切换瞬间保证宿主覆盖层拿到最新布局
     }
+    postPreviewLayout(); // 两个方向都同步：预览显示，返回工坊立即清空宿主副本
   }
   function handleKeydown(event: KeyboardEvent) {
     // dialog 打开时 Escape 优先关闭弹窗

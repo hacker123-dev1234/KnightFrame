@@ -2,12 +2,18 @@
 name: Web Research
 description: Web search, page fetch, URL analysis, information retrieval
 type: active
-match: 
+match: [联网搜索, 网页搜索, 上网查, web research, search the web]
 ---
 
 # Web Research
 
-Rules for finding and verifying information online. Use `web_search` and `web_fetch` tools.
+Rules for finding and verifying information online.
+
+Tool routing:
+- Unknown source or broad question: `web_search`.
+- Known public URL: `web_fetch`.
+- Browser only for explicit visual interaction, JavaScript, login, clicking, or form work.
+- Reuse URLs already returned; never repeat the same search unchanged.
 
 ## 1. Search with intent, not keywords
 
