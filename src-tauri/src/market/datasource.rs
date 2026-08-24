@@ -449,7 +449,7 @@ pub async fn fetch_tradingview(
     Ok(bars)
 }
 
-fn rebase(bars: &mut [KlineBar]) {
+pub(super) fn rebase(bars: &mut [KlineBar]) {
     // bars 已按新→旧排序；forming 头 seq=0，其后已收盘棒从 1 开始编号
     let head_forming = bars.first().is_some_and(|bar| !bar.closed);
     let offset = usize::from(head_forming);

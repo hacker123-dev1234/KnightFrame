@@ -7,7 +7,7 @@ use ignore::WalkBuilder;
 use serde::Serialize;
 use serde_json::json;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     io::Read as _,
     path::{Path, PathBuf},
     sync::Arc,
@@ -163,17 +163,42 @@ pub fn model_context(state: &AppState, root: &str) -> KfResult<String> {
         .get(&canonical)
         .ok_or_else(|| LocalizedError::new("error.project_not_indexed"))?;
     let graph = graph_snapshot(project);
-    // Scope line first: the centrality list below is a ranked excerpt of the
-    // WHOLE workspace graph, never a subprojection — models kept reading the
-    // top-N list as "the repo is only this subtree".
+    let component = ".";
+    let component_nodes = graph
+        .nodes
+        .iter()
+        .filter(|node| node.component == component)
+        .count();
+    let component_links = graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.id == edge.source && node.component == component)
+        })
+        .count();
+    let detached = graph
+        .nodes
+        .iter()
+        .map(|node| node.component.as_str())
+        .filter(|candidate| *candidate != component)
+        .collect::<BTreeSet<_>>();
+    let detached = if detached.is_empty() {
+        "none".to_owned()
+    } else {
+        detached
+            .into_iter()
+            .map(|path| compact_path(path, 52))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let mut context = format!(
-        "Workspace graph (whole repo, ranked excerpt — {} of {} nodes shown, tests down-ranked; use find for other subtrees): name={}; links={}; central:",
-        MAX_CONTEXT_NODES.min(graph.nodes.len()),
-        graph.nodes.len(),
+        "Project component directory: name={}; active=.; nodes={component_nodes}; links={component_links}; detached=[{detached}]. Detached components are separate projects: ignore them unless the user explicitly names their path. Active component index:",
         project.snapshot.name,
-        graph.edges.len()
     );
-    for line in central_graph_lines(&graph, MAX_CONTEXT_NODES, MAX_CONTEXT_RELATIONS) {
+    for line in component_index_lines(&graph, component, MAX_CONTEXT_NODES, MAX_CONTEXT_RELATIONS) {
         if context.len() + line.len() + 1 > MAX_CONTEXT_BYTES {
             break;
         }
@@ -249,8 +274,9 @@ fn relation_rank(kind: &str) -> u8 {
     }
 }
 
-fn central_graph_lines(
+fn component_index_lines(
     graph: &GraphSnapshot,
+    component: &str,
     node_limit: usize,
     relation_limit: usize,
 ) -> Vec<String> {
@@ -268,6 +294,7 @@ fn central_graph_lines(
     let mut ranked: Vec<_> = graph
         .nodes
         .iter()
+        .filter(|node| node.component == component)
         .filter(|node| !(node.kind == "directory" && node.path == "."))
         .filter_map(|node| {
             let (degree, strength) = metrics.get(node.id.as_str()).copied()?;
@@ -683,11 +710,136 @@ pub fn build_manifest(root: &Path) -> KfResult<IndexedProject> {
     })
 }
 
+fn is_project_manifest(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "cargo.toml"
+            | "package.json"
+            | "pyproject.toml"
+            | "setup.py"
+            | "go.mod"
+            | "pom.xml"
+            | "build.gradle"
+            | "build.gradle.kts"
+            | "settings.gradle"
+            | "settings.gradle.kts"
+    )
+}
+
+fn detached_component_roots(project: &IndexedProject) -> Vec<String> {
+    const ROOT_OWNED: &[&str] = &[
+        "apps",
+        "backend",
+        "client",
+        "crates",
+        "frontend",
+        "lib",
+        "modules",
+        "packages",
+        "server",
+        "src",
+        "src-tauri",
+    ];
+    project
+        .files
+        .iter()
+        .filter(|file| is_project_manifest(&file.relative))
+        .filter_map(|file| {
+            let first = file.relative.split('/').next()?;
+            (file.relative.contains('/')
+                && !first.starts_with('.')
+                && !ROOT_OWNED.contains(&first.to_ascii_lowercase().as_str()))
+            .then(|| first.to_owned())
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn provisional_component(path: &str, detached: &[String]) -> String {
+    detached
+        .iter()
+        .filter(|root| path == root.as_str() || path.starts_with(&format!("{root}/")))
+        .max_by_key(|root| root.len())
+        .cloned()
+        .unwrap_or_else(|| ".".into())
+}
+
+fn explicitly_names_component(candidate: &str, component: &str) -> bool {
+    let candidate = candidate
+        .trim_start_matches("./")
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let component = component.to_ascii_lowercase();
+    candidate == component || candidate.starts_with(&format!("{component}/"))
+}
+
+fn merge_dependency_components(nodes: &mut [GraphNode], edges: &[GraphEdge]) {
+    let node_components = nodes
+        .iter()
+        .map(|node| (node.id.clone(), node.component.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut adjacency = BTreeMap::<String, BTreeSet<String>>::new();
+    for component in node_components.values() {
+        adjacency.entry(component.clone()).or_default();
+    }
+    for edge in edges.iter().filter(|edge| edge.kind == "depends") {
+        let Some(source) = node_components.get(edge.source.as_str()) else {
+            continue;
+        };
+        let Some(target) = node_components.get(edge.target.as_str()) else {
+            continue;
+        };
+        if source != target {
+            adjacency
+                .entry(source.clone())
+                .or_default()
+                .insert(target.clone());
+            adjacency
+                .entry(target.clone())
+                .or_default()
+                .insert(source.clone());
+        }
+    }
+    let mut aliases = HashMap::<String, String>::new();
+    let mut visited = BTreeSet::new();
+    for start in adjacency.keys() {
+        if !visited.insert(start.clone()) {
+            continue;
+        }
+        let mut queue = VecDeque::from([start.clone()]);
+        let mut connected = BTreeSet::from([start.clone()]);
+        while let Some(component) = queue.pop_front() {
+            for neighbor in adjacency.get(&component).into_iter().flatten() {
+                if visited.insert(neighbor.clone()) {
+                    connected.insert(neighbor.clone());
+                    queue.push_back(neighbor.clone());
+                }
+            }
+        }
+        let canonical = if connected.contains(".") {
+            ".".to_owned()
+        } else {
+            connected.first().cloned().unwrap_or_else(|| start.clone())
+        };
+        for component in connected {
+            aliases.insert(component, canonical.clone());
+        }
+    }
+    for node in nodes {
+        if let Some(component) = aliases.get(&node.component) {
+            node.component = component.clone();
+        }
+    }
+}
+
 pub fn graph_snapshot(project: &IndexedProject) -> GraphSnapshot {
     let mut directories: BTreeMap<String, usize> = BTreeMap::new();
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let mut file_ids = HashMap::new();
+    let detached = detached_component_roots(project);
 
     for file in &project.files {
         let id = format!("file:{}", file.relative);
@@ -702,6 +854,7 @@ pub fn graph_snapshot(project: &IndexedProject) -> GraphSnapshot {
             label,
             kind: "file".into(),
             path: file.relative.clone(),
+            component: provisional_component(&file.relative, &detached),
             line: None,
             weight: (file.size.max(1) as f32).log10().clamp(1.0, 6.0),
         });
@@ -743,6 +896,7 @@ pub fn graph_snapshot(project: &IndexedProject) -> GraphSnapshot {
             label,
             kind: "directory".into(),
             path: directory.clone(),
+            component: provisional_component(directory, &detached),
             line: None,
             weight: ((*count + 1) as f32).log2().clamp(1.6, 8.0),
         });
@@ -778,6 +932,14 @@ pub fn graph_snapshot(project: &IndexedProject) -> GraphSnapshot {
         ) {
             if let Some(target) = resolve_dependency(&candidate, &file_ids) {
                 let source_id = format!("file:{}", file.relative);
+                let source_component = provisional_component(&file.relative, &detached);
+                let target_path = target.strip_prefix("file:").unwrap_or_default();
+                let target_component = provisional_component(target_path, &detached);
+                if source_component != target_component
+                    && !explicitly_names_component(&candidate, &target_component)
+                {
+                    continue;
+                }
                 if source_id != target
                     && dependency_keys.insert((source_id.clone(), target.clone()))
                 {
@@ -792,6 +954,20 @@ pub fn graph_snapshot(project: &IndexedProject) -> GraphSnapshot {
         }
     }
 
+    merge_dependency_components(&mut nodes, &edges);
+    let component_by_node = nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node.component.as_str()))
+        .collect::<HashMap<_, _>>();
+    edges.retain(|edge| {
+        component_by_node.get(edge.source.as_str()) == component_by_node.get(edge.target.as_str())
+    });
+    let component_count = nodes
+        .iter()
+        .map(|node| node.component.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let dependency_count = edges.iter().filter(|edge| edge.kind == "depends").count();
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
     edges.sort_by(|left, right| {
         (&left.source, &left.target, &left.kind).cmp(&(&right.source, &right.target, &right.kind))
@@ -801,7 +977,8 @@ pub fn graph_snapshot(project: &IndexedProject) -> GraphSnapshot {
         stats: GraphStats {
             files: project.files.len(),
             directories: directories.len(),
-            dependencies: dependency_keys.len(),
+            dependencies: dependency_count,
+            components: component_count,
         },
         nodes,
         edges,
@@ -1252,9 +1429,9 @@ mod tests {
         state.projects.write().insert(root.clone(), indexed);
 
         let context = model_context(&state, root.to_str().unwrap()).unwrap();
-        assert!(context.starts_with("Workspace graph (whole repo"));
-        // boundary declaration: excerpt size vs full node count
-        assert!(context.contains("of") && context.contains("nodes shown"));
+        assert!(context.starts_with("Project component directory:"));
+        assert!(context.contains("active=."));
+        assert!(context.contains("detached=[none]"));
         assert!(context.contains("links="));
         assert!(context.contains("weight="));
         assert!(context.contains("degree="));
@@ -1269,6 +1446,79 @@ mod tests {
         assert_eq!(hub.matches("depends ->").count(), MAX_CONTEXT_RELATIONS);
         assert!(hub.contains("+6"));
         assert!(!context.contains("src/leaf7.ts"));
+    }
+
+    #[test]
+    fn nested_standalone_project_is_a_detached_component() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::create_dir_all(temp.path().join("PA_Agent-main/PA_Agent-main/pa_agent")).unwrap();
+        std::fs::write(temp.path().join("package.json"), "{}").unwrap();
+        std::fs::write(temp.path().join("src/main.ts"), "export const main = 1;\n").unwrap();
+        std::fs::write(temp.path().join("src/review.py"), "import app_context\n").unwrap();
+        std::fs::write(
+            temp.path()
+                .join("PA_Agent-main/PA_Agent-main/pyproject.toml"),
+            "[project]\nname='pa-agent'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path()
+                .join("PA_Agent-main/PA_Agent-main/pa_agent/main.py"),
+            "from .worker import run\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path()
+                .join("PA_Agent-main/PA_Agent-main/pa_agent/worker.py"),
+            "def run(): pass\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path()
+                .join("PA_Agent-main/PA_Agent-main/pa_agent/app_context.py"),
+            "STATE = {}\n",
+        )
+        .unwrap();
+        let indexed = build_manifest(temp.path()).unwrap();
+        let graph = graph_snapshot(&indexed);
+        assert_eq!(graph.stats.components, 2);
+        let pa_nodes = graph
+            .nodes
+            .iter()
+            .filter(|node| node.path.starts_with("PA_Agent-main/"))
+            .collect::<Vec<_>>();
+        assert!(!pa_nodes.is_empty());
+        assert!(
+            pa_nodes
+                .iter()
+                .all(|node| node.component == "PA_Agent-main")
+        );
+        assert!(graph.edges.iter().all(|edge| {
+            let source = graph
+                .nodes
+                .iter()
+                .find(|node| node.id == edge.source)
+                .unwrap();
+            let target = graph
+                .nodes
+                .iter()
+                .find(|node| node.id == edge.target)
+                .unwrap();
+            source.component == target.component
+        }));
+
+        let root = canonical_root(temp.path()).unwrap();
+        let state = AppState::new(Default::default());
+        state.projects.write().insert(root.clone(), indexed);
+        let context = model_context(&state, root.to_str().unwrap()).unwrap();
+        assert!(context.contains("detached=[PA_Agent-main]"));
+        assert!(
+            !context
+                .lines()
+                .skip(1)
+                .any(|line| line.contains("PA_Agent-main/"))
+        );
     }
 
     #[test]

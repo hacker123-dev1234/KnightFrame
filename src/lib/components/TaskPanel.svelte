@@ -15,7 +15,7 @@
 
 <aside class="inspector task-inspector" aria-label={t('task.title')}>
   <header>
-    <div><span class="inspector-eyebrow">{t('task.title')}</span><h2>{task?.current ? t(task.current) : t('task.empty')}</h2></div>
+    <div class="task-heading"><span class="inspector-eyebrow">{t('task.title')}</span><h2 title={task?.current ? t(task.current) : t('task.empty')}>{task?.current ? t(task.current) : t('task.empty')}</h2></div>
     <button type="button" on:click={onClose} aria-label={t('app.close')}><Icon name="close" /></button>
   </header>
   {#if task}
@@ -28,7 +28,7 @@
       {#each task.items as item (item.id)}
         <li class:current={item.status === 'running'}>
           <span class="task-index"><Icon name={item.status === 'completed' ? 'check' : item.status === 'blocked' ? 'shield' : 'spark'} size={14} /></span>
-          <div><strong>{t(item.title)}</strong>{#if item.detail}<p>{t(item.detail)}</p>{/if}</div>
+          <div class="task-item-copy"><strong title={t(item.title)}>{t(item.title)}</strong>{#if item.detail}<p title={t(item.detail)}>{t(item.detail)}</p>{/if}</div>
           <StatusMark status={item.status} label={t(`status.${item.status}`)} />
         </li>
       {/each}

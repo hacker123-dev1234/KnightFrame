@@ -32,8 +32,20 @@ pub fn new_task(id: String, title: String) -> TaskSnapshot {
     }
 }
 
-/// 依据 items 推导任务整体状态（回合收尾时由 session.rs 调用）。
-pub fn recalculate_status(task: &mut TaskSnapshot) {
+/// Settle only work that actually started when a turn fails or is cancelled.
+/// Pending plan items stay resumable instead of being falsely painted failed.
+pub fn settle_after_turn(task: &mut TaskSnapshot, outcome: &str) {
+    for item in &mut task.items {
+        match outcome {
+            "completed" if item.status == "running" || item.status == "pending" => {
+                item.status = "completed".into();
+            }
+            "failed" | "cancelled" if item.status == "running" => {
+                item.status = outcome.into();
+            }
+            _ => {}
+        }
+    }
     recalculate(task);
 }
 
@@ -72,6 +84,12 @@ pub fn apply(task: &mut TaskSnapshot, op: &str, item: Option<&str>) -> KfResult<
             let title = item
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| LocalizedError::new("error.task_item_required"))?;
+            if task.items.len() == 1 && task.items[0].title == "task.session" {
+                task.items[0].title = title.trim().into();
+                task.items[0].status = "pending".into();
+                recalculate(task);
+                return Ok(());
+            }
             let index = task.items.len() + 1;
             task.items.push(TaskItem {
                 id: format!("{}:{index}", task.id),
@@ -135,5 +153,36 @@ mod tests {
         let id = task.items[0].id.clone();
         apply(&mut task, "cancelled", Some(&id)).unwrap();
         assert_eq!(task.status, "cancelled");
+    }
+
+    #[test]
+    fn failed_turn_preserves_unstarted_plan_items() {
+        let mut task = new_task("task".into(), "current".into());
+        apply(&mut task, "add", Some("later")).unwrap();
+        let current = task.items[0].id.clone();
+        apply(&mut task, "running", Some(&current)).unwrap();
+        settle_after_turn(&mut task, "failed");
+        assert_eq!(task.items[0].status, "failed");
+        assert_eq!(task.items[1].status, "pending");
+        assert_eq!(task.current.as_deref(), Some("later"));
+    }
+
+    #[test]
+    fn cancelled_turn_leaves_pending_work_resumable() {
+        let mut task = new_task("task".into(), "current".into());
+        apply(&mut task, "add", Some("later")).unwrap();
+        let current = task.items[0].id.clone();
+        apply(&mut task, "running", Some(&current)).unwrap();
+        settle_after_turn(&mut task, "cancelled");
+        assert_eq!(task.items[0].status, "cancelled");
+        assert_eq!(task.items[1].status, "pending");
+    }
+
+    #[test]
+    fn first_real_item_replaces_placeholder() {
+        let mut task = new_task("task".into(), "task.session".into());
+        apply(&mut task, "add", Some("inspect project")).unwrap();
+        assert_eq!(task.items.len(), 1);
+        assert_eq!(task.items[0].title, "inspect project");
     }
 }

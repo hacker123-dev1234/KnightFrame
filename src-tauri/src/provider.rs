@@ -216,6 +216,9 @@ fn provider_model(
         available,
         capabilities: model.capabilities.clone(),
         context_limit: model.context_limit,
+        context_window: model
+            .context_window
+            .filter(|window| model.context_limit.is_none_or(|limit| *window <= limit)),
         thinking_enabled: model.thinking_enabled,
         thinking_effort: normalized_thinking_effort(&model.thinking_effort).to_owned(),
         thinking_toggle: model.thinking_toggle,
@@ -262,6 +265,7 @@ fn catalog_from_ids(ids: impl IntoIterator<Item = String>) -> Vec<ProviderModel>
                 adapter: Some("openai".into()),
                 capabilities: vec!["streaming".into(), "reasoning".into(), "toolCalls".into()],
                 context_limit: None,
+                context_window: None,
                 thinking_enabled: false,
                 thinking_effort: "medium".into(),
                 thinking_toggle: false,
@@ -363,6 +367,11 @@ pub fn validate_profiles(profiles: &[ProviderProfile]) -> KfResult<()> {
                     effort.as_str(),
                     "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
                 )
+            }) {
+                return Err(LocalizedError::new("error.provider_model"));
+            }
+            if model.context_window.is_some_and(|window| {
+                window == 0 || model.context_limit.is_some_and(|limit| window > limit)
             }) {
                 return Err(LocalizedError::new("error.provider_model"));
             }
@@ -512,6 +521,45 @@ fn models_dev_provider<'a>(catalog: &'a Value, profile: &ProviderProfile) -> Opt
     })
 }
 
+fn provider_contains_model(provider: &Value, model_id: &str) -> bool {
+    provider
+        .get("models")
+        .and_then(Value::as_object)
+        .is_some_and(|models| models.contains_key(model_id))
+}
+
+fn models_dev_provider_for_model<'a>(
+    catalog: &'a Value,
+    profile: &ProviderProfile,
+    model_id: &str,
+) -> Option<&'a Value> {
+    if let Some(provider) = models_dev_provider(catalog, profile)
+        && provider_contains_model(provider, model_id)
+    {
+        return Some(provider);
+    }
+
+    let root = catalog.as_object()?;
+    let model = model_id.to_ascii_lowercase();
+    let preferred = if model.starts_with("gpt-") || model.starts_with('o') {
+        Some("openai")
+    } else if model.contains("claude") {
+        Some("anthropic")
+    } else if model.contains("gemini") {
+        Some("google")
+    } else {
+        None
+    };
+    if let Some(provider) = preferred
+        .and_then(|key| root.get(key))
+        .filter(|provider| provider_contains_model(provider, model_id))
+    {
+        return Some(provider);
+    }
+    root.values()
+        .find(|provider| provider_contains_model(provider, model_id))
+}
+
 fn adapter_from_models_dev(provider: &Value, model: &Value) -> Option<String> {
     let npm = model
         .pointer("/provider/npm")
@@ -639,6 +687,60 @@ fn enrich_from_models_dev(
     discovered
 }
 
+fn has_custom_model_name(model: &ConfiguredModel) -> bool {
+    !model.name.trim().is_empty()
+        && model.name != model.id
+        && model.name != humanize_model_id(&model.id)
+}
+
+fn merge_catalog_model(original: ConfiguredModel, metadata: &ConfiguredModel) -> ConfiguredModel {
+    let mut enriched = metadata.clone();
+    enriched.id = original.id.clone();
+    if has_custom_model_name(&original) {
+        enriched.name = original.name.clone();
+    }
+    if original.adapter.is_some() {
+        enriched.adapter = original.adapter.clone();
+    }
+    enriched.thinking_enabled = original.thinking_enabled
+        && enriched
+            .thinking_efforts
+            .iter()
+            .any(|effort| effort == &original.thinking_effort);
+    if enriched.thinking_enabled {
+        enriched.thinking_effort = original.thinking_effort.clone();
+    }
+    enriched.context_window = original
+        .context_window
+        .filter(|window| enriched.context_limit.is_none_or(|limit| *window <= limit));
+    enriched.catalog_synced = true;
+    enriched
+}
+
+fn known_catalog_models(profiles: &[ProviderProfile]) -> BTreeMap<String, ConfiguredModel> {
+    let mut known = BTreeMap::<String, ConfiguredModel>::new();
+    for model in profiles
+        .iter()
+        .flat_map(|profile| &profile.models)
+        .filter(|model| model.catalog_synced)
+    {
+        let key = model.id.to_ascii_lowercase();
+        let replace = known.get(&key).is_none_or(|current| {
+            (
+                model.context_limit.unwrap_or(0),
+                model.thinking_efforts.len(),
+            ) > (
+                current.context_limit.unwrap_or(0),
+                current.thinking_efforts.len(),
+            )
+        });
+        if replace {
+            known.insert(key, model.clone());
+        }
+    }
+    known
+}
+
 /// Resolve old/manual model entries once, then persist the compact result.
 /// Startup never depends on this network catalog and already-synced entries do
 /// not download it again.
@@ -653,28 +755,50 @@ pub async fn sync_catalog_metadata(
     {
         return None;
     }
-    let catalog = fetch_models_dev(client).await?;
     let mut next = profiles.to_vec();
     let mut changed = false;
+    let known = known_catalog_models(profiles);
     for profile in &mut next {
-        let profile_snapshot = profile.clone();
-        let Some(metadata_provider) = models_dev_provider(&catalog, &profile_snapshot) else {
-            continue;
-        };
         for model in &mut profile.models {
             if model.catalog_synced {
                 continue;
             }
+            if let Some(metadata) = known.get(&model.id.to_ascii_lowercase()) {
+                *model = merge_catalog_model(model.clone(), metadata);
+                changed = true;
+            }
+        }
+    }
+
+    if !next
+        .iter()
+        .flat_map(|profile| &profile.models)
+        .any(|model| !model.catalog_synced)
+    {
+        return changed.then_some(next);
+    }
+
+    let Some(catalog) = fetch_models_dev(client).await else {
+        return changed.then_some(next);
+    };
+    for profile in &mut next {
+        let profile_snapshot = profile.clone();
+        for model in &mut profile.models {
+            if model.catalog_synced {
+                continue;
+            }
+            let Some(metadata_provider) =
+                models_dev_provider_for_model(&catalog, &profile_snapshot, &model.id)
+            else {
+                continue;
+            };
             let original = model.clone();
             let mut enriched =
                 enrich_from_models_dev(&profile_snapshot, metadata_provider, original.clone());
             if !enriched.catalog_synced {
                 continue;
             }
-            if !original.name.trim().is_empty()
-                && original.name != original.id
-                && original.name != humanize_model_id(&original.id)
-            {
+            if has_custom_model_name(&original) {
                 enriched.name = original.name;
             }
             if original.adapter.is_some() {
@@ -688,6 +812,9 @@ pub async fn sync_catalog_metadata(
             if enriched.thinking_enabled {
                 enriched.thinking_effort = original.thinking_effort;
             }
+            enriched.context_window = original
+                .context_window
+                .filter(|window| enriched.context_limit.is_none_or(|limit| *window <= limit));
             *model = enriched;
             changed = true;
         }
@@ -737,9 +864,7 @@ pub async fn kf_provider_probe(
     // reasoning-variant metadata. models.dev is the same public catalog used
     // by OpenCode; failure here never makes provider discovery fail.
     let models_dev = fetch_models_dev(&client_state.client).await;
-    let metadata_provider = models_dev
-        .as_ref()
-        .and_then(|catalog| models_dev_provider(catalog, &profile));
+    let known = known_catalog_models(&client_state.settings.read().providers);
 
     let mut models = items
         .into_iter()
@@ -774,6 +899,7 @@ pub async fn kf_provider_probe(
                     .get("inputTokenLimit")
                     .or_else(|| item.get("context_window"))
                     .and_then(Value::as_u64),
+                context_window: None,
                 thinking_enabled: false,
                 thinking_effort: "medium".into(),
                 thinking_toggle: false,
@@ -783,7 +909,12 @@ pub async fn kf_provider_probe(
             })
         })
         .map(|model| {
-            metadata_provider
+            if let Some(metadata) = known.get(&model.id.to_ascii_lowercase()) {
+                return merge_catalog_model(model, metadata);
+            }
+            models_dev
+                .as_ref()
+                .and_then(|catalog| models_dev_provider_for_model(catalog, &profile, &model.id))
                 .map(|provider| enrich_from_models_dev(&profile, provider, model.clone()))
                 .unwrap_or(model)
         })
@@ -1219,6 +1350,11 @@ impl ToolAccumulator {
                         .arg("tool", &call.name)
                         .arg("detail", e)
                 })?;
+                let arguments = normalize_tool_arguments(&call.name, arguments).map_err(|e| {
+                    LocalizedError::new("error.provider_tool_arguments")
+                        .arg("tool", &call.name)
+                        .arg("detail", e)
+                })?;
                 Ok(ToolCall {
                     index,
                     id: call.id,
@@ -1313,6 +1449,40 @@ fn parse_tool_arguments(raw: &str) -> Result<Value, serde_json::Error> {
         return Ok(value);
     }
     serde_json::from_str(trimmed)
+}
+
+/// Normalize lossless envelopes emitted by compatibility gateways. Exposed
+/// tool schemas always expect an object, so singleton object arrays and a sole
+/// named argument envelope are protocol noise rather than user intent.
+fn normalize_tool_arguments(tool: &str, value: Value) -> Result<Value, serde_json::Error> {
+    let value = match value {
+        Value::Array(mut items) if items.len() == 1 && items[0].is_object() => items.remove(0),
+        value => value,
+    };
+    let Value::Object(object) = &value else {
+        return serde_json::from_str("{");
+    };
+    for wrapper in ["arguments", "input", "parameters", "params", "tool_input"] {
+        let Some(inner) = object.get(wrapper) else {
+            continue;
+        };
+        let envelope_only = object.len() == 1
+            || object.len() == 2
+                && object
+                    .get("name")
+                    .or_else(|| object.get("tool"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name == tool);
+        if !envelope_only {
+            continue;
+        }
+        return match inner {
+            Value::Object(_) => Ok(inner.clone()),
+            Value::String(raw) => parse_tool_arguments(raw),
+            _ => serde_json::from_str("{"),
+        };
+    }
+    Ok(value)
 }
 
 fn repair_tool_json(raw: &str) -> String {
@@ -2431,6 +2601,7 @@ mod tests {
             adapter: None,
             capabilities: vec!["streaming".into()],
             context_limit: None,
+            context_window: None,
             thinking_enabled: false,
             thinking_effort: "medium".into(),
             thinking_toggle: false,
@@ -2479,6 +2650,58 @@ mod tests {
         let muse = enrich_from_models_dev(&profile, &metadata, discovered("muse-spark-free"));
         assert_eq!(muse.adapter.as_deref(), Some("openai-responses"));
         assert_eq!(muse.thinking_efforts, ["minimal", "xhigh"]);
+    }
+
+    #[tokio::test]
+    async fn custom_relay_reuses_catalog_metadata_from_same_model() {
+        let mut catalog_profile = profile("openai-responses");
+        catalog_profile.id = "catalog".into();
+        let mut metadata = discovered("gpt-5.6-sol");
+        metadata.catalog_synced = true;
+        metadata.context_limit = Some(1_050_000);
+        metadata.thinking_toggle = true;
+        metadata.thinking_efforts = vec![
+            "low".into(),
+            "medium".into(),
+            "high".into(),
+            "xhigh".into(),
+            "max".into(),
+        ];
+        catalog_profile.models.push(metadata);
+
+        let mut relay = profile("openai");
+        relay.id = "relay".into();
+        relay.base_url = "https://relay.example/v1".into();
+        let mut manual = discovered("gpt-5.6-sol");
+        manual.adapter = Some("openai-responses".into());
+        manual.thinking_enabled = true;
+        manual.thinking_effort = "xhigh".into();
+        manual.context_window = Some(400_000);
+        relay.models.push(manual);
+
+        let synced = sync_catalog_metadata(&reqwest::Client::new(), &[catalog_profile, relay])
+            .await
+            .expect("local metadata should avoid a network dependency");
+        let model = &synced[1].models[0];
+        assert_eq!(model.context_limit, Some(1_050_000));
+        assert_eq!(model.context_window, Some(400_000));
+        assert_eq!(model.adapter.as_deref(), Some("openai-responses"));
+        assert!(model.thinking_enabled);
+        assert_eq!(model.thinking_effort, "xhigh");
+        assert_eq!(model.thinking_efforts.len(), 5);
+    }
+
+    #[test]
+    fn global_catalog_fallback_matches_exact_model_family() {
+        let catalog = json!({
+            "openai": {"models": {"gpt-5.6-sol": {}}},
+            "other": {"models": {"other-model": {}}}
+        });
+        let mut relay = profile("openai");
+        relay.base_url = "https://relay.example/v1".into();
+        let provider = models_dev_provider_for_model(&catalog, &relay, "gpt-5.6-sol")
+            .expect("exact global model metadata");
+        assert!(provider_contains_model(provider, "gpt-5.6-sol"));
     }
 
     #[test]
@@ -2862,6 +3085,34 @@ mod tests {
             parse_tool_arguments(r#""{\"action\":\"status\"}""#).unwrap()["action"],
             "status"
         );
+    }
+
+    #[test]
+    fn tool_argument_envelopes_and_singleton_arrays_are_normalized() {
+        let wrapped = normalize_tool_arguments(
+            "read",
+            json!({"name":"read","arguments":{"path":"src/main.rs"}}),
+        )
+        .unwrap();
+        assert_eq!(wrapped["path"], "src/main.rs");
+        let input = normalize_tool_arguments(
+            "edit",
+            json!({"input":"{\"path\":\"a.rs\",\"oldText\":\"a\",\"newText\":\"b\"}"}),
+        )
+        .unwrap();
+        assert_eq!(input["newText"], "b");
+        let array = normalize_tool_arguments("find", json!([{"query":"AgentRunRequest"}])).unwrap();
+        assert_eq!(array["query"], "AgentRunRequest");
+    }
+
+    #[test]
+    fn ambiguous_tool_argument_envelopes_are_not_guessed() {
+        let value = json!({"arguments":{"path":"a.rs"},"unexpected":true});
+        assert_eq!(
+            normalize_tool_arguments("read", value.clone()).unwrap(),
+            value
+        );
+        assert!(normalize_tool_arguments("read", json!([1, 2])).is_err());
     }
 
     #[test]

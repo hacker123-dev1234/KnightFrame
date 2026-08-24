@@ -111,6 +111,30 @@ struct ValidateOutcome {
     retries: u32,
 }
 
+const RETRY_REPLY_LIMIT: usize = 4 * 1024;
+
+fn bounded_retry_reply(content: &str) -> String {
+    if content.len() <= RETRY_REPLY_LIMIT {
+        return content.to_owned();
+    }
+    let head_end = content
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= RETRY_REPLY_LIMIT * 3 / 4)
+        .last()
+        .unwrap_or(0);
+    let tail_start = content
+        .char_indices()
+        .map(|(index, _)| index)
+        .find(|index| *index >= content.len().saturating_sub(RETRY_REPLY_LIMIT / 4))
+        .unwrap_or(content.len());
+    format!(
+        "{}\n...[失败回复已截断]...\n{}",
+        &content[..head_end],
+        &content[tail_start..]
+    )
+}
+
 #[allow(clippy::too_many_arguments)] // validation pipeline context, not a config surface
 async fn validate_with_retry(
     stage: &str,
@@ -125,6 +149,7 @@ async fn validate_with_retry(
 ) -> Result<ValidateOutcome, AnalysisError> {
     let mut reply = initial_reply;
     let mut messages = messages;
+    let retry_base_len = messages.len();
     let mut previous_object: Option<Value> = None;
     let mut attempt = 0u32;
     loop {
@@ -188,7 +213,10 @@ async fn validate_with_retry(
                 previous_object =
                     serde_json::from_str::<Value>(&super::validator::strip_fences(&reply.content))
                         .ok();
-                messages.push(json!({"role": "assistant", "content": reply.content}));
+                messages.truncate(retry_base_len);
+                messages.push(
+                    json!({"role": "assistant", "content": bounded_retry_reply(&reply.content)}),
+                );
                 messages.push(json!({"role": "user", "content": feedback}));
                 let reply_result =
                     stream_chat(client, &settings.provider, &messages, cancellation, None).await;
@@ -729,5 +757,15 @@ mod tests {
                 .unwrap()
                 .contains("K1")
         );
+    }
+
+    #[test]
+    fn retry_reply_is_bounded_without_losing_both_ends() {
+        let content = format!("BEGIN{}END", "x".repeat(RETRY_REPLY_LIMIT * 2));
+        let bounded = bounded_retry_reply(&content);
+        assert!(bounded.len() < content.len());
+        assert!(bounded.starts_with("BEGIN"));
+        assert!(bounded.ends_with("END"));
+        assert!(bounded.contains("失败回复已截断"));
     }
 }

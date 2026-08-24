@@ -222,6 +222,12 @@ pub async fn kf_session_send(
         });
     }
     let turn_id = Uuid::new_v4().to_string();
+    let turn_task = state.settings.read().task_manager.then(|| {
+        task::new_task(
+            format!("task-{session_id}-{turn_id}"),
+            "task.session".into(),
+        )
+    });
     let session_snapshot = {
         let mut sessions = state.sessions.write();
         let session = sessions.get_mut(&session_id).ok_or_else(|| {
@@ -232,6 +238,7 @@ pub async fn kf_session_send(
         }
         session.status = "streaming".into();
         session.last_error = None;
+        session.task = turn_task.clone();
         if session.messages.is_empty() {
             session.title = session_title(&content);
         }
@@ -244,6 +251,11 @@ pub async fn kf_session_send(
         });
         session.clone()
     };
+    if let Some(task) = &turn_task {
+        state.tasks.write().insert(session_id.clone(), task.clone());
+    } else {
+        state.tasks.write().remove(&session_id);
+    }
     let fallback_title = session_snapshot.title.clone();
     let should_name = session_snapshot.messages.len() == 1;
     let cancellation = CancellationToken::new();
@@ -343,23 +355,30 @@ pub async fn kf_session_send(
                 Err(error) if error.key == "error.session_cancelled" => "cancelled",
                 Err(_) => "failed",
             };
-            let task_snapshot = {
+            let (task_snapshot, placeholder_removed) = {
                 let mut tasks = state_for_stream.tasks.write();
-                tasks.get_mut(&session_for_stream).and_then(|task| {
-                    let is_placeholder =
-                        task.items.len() == 1 && task.items[0].title == "task.session";
-                    if is_placeholder {
-                        return None; // 占位任务不向外广播，随回合消失
-                    }
-                    for item in &mut task.items {
-                        if item.status == "running" || item.status == "pending" {
-                            item.status = final_status.into();
-                        }
-                    }
-                    crate::task::recalculate_status(task);
-                    Some(task.clone())
-                })
+                let is_placeholder = tasks.get(&session_for_stream).is_some_and(|task| {
+                    task.items.len() == 1 && task.items[0].title == "task.session"
+                });
+                if is_placeholder {
+                    tasks.remove(&session_for_stream);
+                    (None, true)
+                } else {
+                    let snapshot = tasks.get_mut(&session_for_stream).map(|task| {
+                        crate::task::settle_after_turn(task, final_status);
+                        task.clone()
+                    });
+                    (snapshot, false)
+                }
             };
+            if placeholder_removed
+                && let Some(session) = state_for_stream
+                    .sessions
+                    .write()
+                    .get_mut(&session_for_stream)
+            {
+                session.task = None;
+            }
             if let Some(snapshot) = task_snapshot {
                 if let Some(session) = state_for_stream
                     .sessions

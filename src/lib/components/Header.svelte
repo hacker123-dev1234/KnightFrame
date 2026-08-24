@@ -17,10 +17,12 @@
   export let onUsage: () => void;
   export let onSelectModel: (providerId: string, modelId: string) => Promise<void>;
   export let onConfigureThinking: (providerId: string, modelId: string, enabled: boolean, effort: ThinkingEffort) => Promise<void>;
+  export let onConfigureContext: (providerId: string, modelId: string, contextWindow: number) => Promise<void>;
 
   let selectingModel = false;
   let modelOpen = false;
   let configuringThinking = false;
+  let configuringContext = false;
   let modelMenu: HTMLDivElement;
 
   $: t = (key: string) => translate(locale, key);
@@ -44,6 +46,27 @@
       await onConfigureThinking(selected.providerId, selected.modelId, enabled, effort);
     } finally {
       configuringThinking = false;
+    }
+  }
+
+  function contextOptions(limit: number | undefined): number[] {
+    if (!limit || limit <= 0) return [];
+    const standard = [16_000, 32_000, 64_000, 128_000, 200_000, 256_000, 400_000, 512_000, 1_000_000];
+    return [...new Set([...standard.filter((value) => value <= limit), limit])].sort((left, right) => left - right);
+  }
+
+  function compactTokens(value: number): string {
+    if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(2))}M`;
+    return `${Math.round(value / 1_000)}K`;
+  }
+
+  async function configureContext(contextWindow: number) {
+    if (!selected || configuringContext || session?.status === 'streaming') return;
+    configuringContext = true;
+    try {
+      await onConfigureContext(selected.providerId, selected.modelId, contextWindow);
+    } finally {
+      configuringContext = false;
     }
   }
 
@@ -140,6 +163,18 @@
                 <strong class="thinking-auto">{t('settings.providers.thinkingAutomatic')}</strong>
               {:else}
                 <strong class="thinking-auto muted">{t('settings.providers.thinkingUnsupported')}</strong>
+              {/if}
+              {#if selected.contextLimit && contextOptions(selected.contextLimit).length}
+                <span class="thinking-panel-title">{t('settings.providers.contextWindow')}</span>
+                <span class="model-context-status">{compactTokens(selected.contextWindow ?? selected.contextLimit)} / {compactTokens(selected.contextLimit)}</span>
+                <select
+                  value={selected.contextWindow ?? selected.contextLimit}
+                  disabled={configuringContext || session?.status === 'streaming'}
+                  aria-label={t('settings.providers.contextWindow')}
+                  on:change={(event) => configureContext(Number(event.currentTarget.value))}
+                >
+                  {#each contextOptions(selected.contextLimit) as option}<option value={option}>{compactTokens(option)}{option === selected.contextLimit ? ` · ${t('settings.providers.contextMaximum')}` : ''}</option>{/each}
+                </select>
               {/if}
             </div>
           {/if}

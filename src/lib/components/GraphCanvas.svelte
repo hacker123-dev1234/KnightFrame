@@ -87,14 +87,56 @@
       if ((left.kind === 'directory') !== (right.kind === 'directory')) return left.kind === 'directory' ? -1 : 1;
       return right.weight - left.weight || left.id.localeCompare(right.id);
     });
-    const selected = candidates.slice(0, 360);
+    const grouped = new Map<string, typeof candidates>();
+    for (const node of candidates) {
+      const group = grouped.get(node.component) ?? [];
+      group.push(node);
+      grouped.set(node.component, group);
+    }
+    const groups = [...grouped.entries()].sort(([left, leftNodes], [right, rightNodes]) =>
+      rightNodes.length - leftNodes.length || left.localeCompare(right));
+    let selected: typeof candidates = [];
+    if (needle) {
+      selected = candidates.slice(0, 360);
+    } else {
+      const weight = groups.reduce((total, [, items]) => total + Math.sqrt(items.length), 0) || 1;
+      const offsets = new Map<string, number>();
+      for (const [component, items] of groups) {
+        const allocation = Math.max(1, Math.floor(360 * Math.sqrt(items.length) / weight));
+        const take = Math.min(items.length, allocation);
+        selected.push(...items.slice(0, take));
+        offsets.set(component, take);
+      }
+      while (selected.length < 360) {
+        let added = false;
+        for (const [component, items] of groups) {
+          const offset = offsets.get(component) ?? 0;
+          if (offset < items.length && selected.length < 360) {
+            selected.push(items[offset]);
+            offsets.set(component, offset + 1);
+            added = true;
+          }
+        }
+        if (!added) break;
+      }
+    }
     const count = Math.max(1, selected.length);
+    const componentOrder = [...new Set(selected.map((node) => node.component))];
+    const localIndexes = new Map<string, number>();
     nodes = selected.map((node, index) => {
       const seed = hash(node.id);
-      const angle = ((seed % 10000) / 10000) * Math.PI * 2 + index * 2.39996;
+      const componentIndex = componentOrder.indexOf(node.component);
+      const componentCount = componentOrder.length;
+      const clusterAngle = componentCount <= 1 ? 0 : componentIndex / componentCount * Math.PI * 2 - Math.PI / 2;
+      const clusterRadius = componentCount <= 1 ? 0 : 190 + Math.sqrt(componentCount) * 55;
+      const centerX = Math.cos(clusterAngle) * clusterRadius;
+      const centerY = Math.sin(clusterAngle) * clusterRadius;
+      const localIndex = localIndexes.get(node.component) ?? 0;
+      localIndexes.set(node.component, localIndex + 1);
+      const angle = ((seed % 10000) / 10000) * Math.PI * 2 + localIndex * 2.39996;
       const spacing = .82 + repulsion * .22;
-      const radius = (node.kind === 'directory' ? 40 + Math.sqrt(index + 1) * 10 : 90 + Math.sqrt(index + 1) * 13) * spacing;
-      return { ...node, index, x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, born: reducedMotion ? 1 : index / count };
+      const radius = (node.kind === 'directory' ? 22 + Math.sqrt(localIndex + 1) * 8 : 48 + Math.sqrt(localIndex + 1) * 10) * spacing;
+      return { ...node, index, x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius, born: reducedMotion ? 1 : index / count };
     });
     byId = new Map(nodes.map((node) => [node.id, node]));
     edges = snapshot.edges.filter((edge) => byId.has(edge.source) && byId.has(edge.target));

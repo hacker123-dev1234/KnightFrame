@@ -40,6 +40,20 @@ Retrieval resolves paths, symbols, and references through the index before readi
 
 KnightFrame is beta software. Conversation, project indexing, tools, model adapters, the embedded browser, and Plugin Studio are available. Provider compatibility continues to be refined as upstream protocols change.
 
+## Plugin Studio host preview
+
+The KnightFrame preview uses the UI embedded in the build and does not require another KnightFrame source checkout. Plugin design and adapter export also work without DSH.
+
+The real DSH host preview requires a locally built DSH repository. With Node.js 22.19+ and pnpm 11.7+, run from the DSH repository root:
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm build
+[Environment]::SetEnvironmentVariable("KF_DSH_ROOT", "D:\Projects\deepseek-harness-master", "User")
+```
+
+`KF_DSH_ROOT` must point to the repository root containing `apps/cli/lib/bin.js`. Restart KnightFrame after setting it. Alternatively, name the repository `deepseek-harness-master` and place it beside `KnightFrame.exe` or in its parent directory.
+
 ## Build
 
 Requires Rust stable, Node.js 20+, pnpm 9+, Windows WebView2, and Visual Studio C++ Build Tools.

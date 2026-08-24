@@ -47,8 +47,8 @@ const CLARIFY_GUIDANCE: &str =
 const CONTINUE_RESPONSE: &str =
     "Continue exactly where the response ended. Do not restart or summarize.";
 const FINALIZE_RESPONSE: &str = "Reasoning was received without a final answer. Return the final answer now; do not repeat the reasoning.";
-const TOOL_CAPABILITY_RECOVERY: &str = "The provider declared a tool call without its payload. Retry the intended action now with exactly one exposed tool. Use edit for an existing file and run only after the edit.";
-const SYSTEM: &str = "You are KnightFrame, a coding agent. Start from the project graph. Batch independent find/search/read queries before shell exploration, then edit exact unique fragments. For internet discovery use web_search; for a known public URL use web_fetch. Use browser only when the user explicitly asks to see or interact with the page, or when JavaScript, authentication, or UI actions are required. Never open Browser for a simple search/fetch. Use recall only for a receipt marked completeness=reference when its omitted detail blocks work; never recall complete/partial receipts or web pages. Do not repeat unchanged reads or searches; every run executes fresh, so rerun freely whenever fresh output matters. Keep the task plan current for multi-step work. Run programs, builds, and tests; shell remains available. Paths may be relative or absolute. Verify time-sensitive web claims from primary sources and include their URLs. Never invent results. Market and trading questions are analysis only — never trade, order, change positions, or purchase.";
+const TOOL_CAPABILITY_RECOVERY: &str = "The previous tool call was malformed or incomplete. Retry only that intended action with exactly one exposed tool and a JSON object matching its schema. Keep completed work and the current task plan; do not restart the task.";
+const SYSTEM: &str = "You are KnightFrame, a coding agent. Start from the active project-component index. Detached components are separate projects: ignore them unless the user explicitly names their path. Batch independent find/search/read queries before shell exploration, then edit exact unique fragments. Delegate independent work with subagent and always mark it reasoning or execution: reasoning is for analysis that needs the main model's depth; execution is for concrete edits, commands, and verification at the cheapest configured effort. For internet discovery use web_search; for a known public URL use web_fetch. Use browser only when the user explicitly asks to see or interact with the page, or when JavaScript, authentication, or UI actions are required. Never open Browser for a simple search/fetch. Use recall only for a receipt marked completeness=reference when its omitted detail blocks work; never recall complete/partial receipts or web pages. Do not repeat unchanged reads or searches; every run executes fresh, so rerun freely whenever fresh output matters. Keep the task plan current for multi-step work. Run programs, builds, and tests; shell remains available. Paths may be relative or absolute. Verify time-sensitive web claims from primary sources and include their URLs. Never invent results. Market and trading questions are analysis only — never trade, order, change positions, or purchase.";
 const CAVEMAN_LITE: &str = "Use the minimum necessary words. No pleasantries, request restatement, or unnecessary sections. Preserve technical detail and verification evidence.";
 
 #[derive(Clone)]
@@ -70,6 +70,7 @@ pub trait ToolRegistry {
 pub struct BuiltinRegistry {
     task_enabled: bool,
     skill_enabled: bool,
+    subagent_enabled: bool,
     workspace_available: bool,
 }
 
@@ -130,6 +131,13 @@ impl ToolRegistry for BuiltinRegistry {
             "Control the shared in-window browser. open/search shows it; snapshot returns compact text and refs; fetch reads without opening. Use refs for interactions. Compatible aliases and nested act requests are accepted.",
             json!({"type":"object","properties":{"action":{"type":"string","enum":["fetch","search","snapshot","open","new-tab","select-tab","close-tab","navigate","back","forward","refresh","stop","close","focus","status","tabs","act","click","fill","select","hover","press","scroll"]},"url":{"type":"string"},"targetUrl":{"type":"string","description":"Alias for url."},"query":{"type":"string","description":"Search text for search/open."},"tabId":{"type":"string"},"targetId":{"type":"string","description":"Alias for tabId."},"kind":{"type":"string","enum":["click","fill","type","select","hover","press","scroll"]},"offset":{"type":"integer","minimum":0,"description":"Continue from a prior fetch nextOffset."},"ref":{"type":"string","description":"Short element ref returned by fetch/snapshot."},"selector":{"type":"string","description":"Optional CSS selector for interaction."},"value":{"type":"string","description":"Text or option value for fill/select."},"text":{"type":"string","description":"Alias for value."},"key":{"type":"string","description":"Key for press; default Enter."},"y":{"type":"integer","description":"Scroll pixels; negative moves up."},"request":{"type":"object","description":"Optional nested interaction payload."}},"required":["action"]}),
         ));
+        if self.subagent_enabled {
+            tools.push(spec(
+                "subagent",
+                "Delegate one independent task in a separate context. Mark reasoning for deep analysis (inherits the main model and effort) or execution for edits/commands/tests (uses the configured execution model and lowest effort by default). Return only the task result and evidence.",
+                json!({"type":"object","properties":{"kind":{"type":"string","enum":["reasoning","execution"]},"task":{"type":"string","minLength":1},"context":{"type":"string","description":"Only facts not already present in the project index."}},"required":["kind","task"]}),
+            ));
+        }
         tools.push(spec(
             "market",
             "Market data lookup without opening the market page. klines returns a token-lean analysis snapshot for one symbol/timeframe: last close, window change %, high/low, EMA20 trend bias, ATR14 volatility, and the most recent compact OHLCV bars (oldest→newest). Answer buy/what/when questions by calling it for several candidate symbols (e.g. 600519, 000858, 上证指数, XAUUSD/黄金) and comparing. Symbols: A-share codes (600519, sh600519, sz000858), Chinese names (贵州茅台, 茅台, 五粮液 — resolved online), index aliases (上证指数), metals (XAUUSD/黄金, XAGUSD/白银), full eastmoney secids (118.AU9999), or native codes for other sources. Sources auto-failover in unreachable networks (eastmoney works in mainland China by default).",
@@ -174,8 +182,9 @@ fn tool_order(name: &str) -> usize {
         "browser" => 8,
         "market" => 9,
         "recall" => 10,
-        "skill" => 11,
-        "task" => 12,
+        "subagent" => 11,
+        "skill" => 12,
+        "task" => 13,
         _ => usize::MAX,
     }
 }
@@ -404,6 +413,18 @@ fn history_budget(context_limit: Option<u64>) -> usize {
             ) as usize
         })
         .unwrap_or(DEFAULT_HISTORY_BUDGET_BYTES)
+}
+
+fn recoverable_tool_protocol_error(key: &str) -> bool {
+    matches!(
+        key,
+        "error.provider_tool_capability"
+            | "error.provider_tool_arguments"
+            | "error.provider_tool_incomplete"
+            | "error.provider_tool_index"
+            | "error.provider_tool_id_changed"
+            | "error.provider_tool_name_changed"
+    )
 }
 
 fn compact_line(content: &str, limit: usize) -> String {
@@ -1196,15 +1217,6 @@ fn cached_observation(
     Some((compact, observation.reference.clone()))
 }
 
-/// New user turn: the world outside the loop may have changed (user edits,
-/// external processes), so deterministic read caches from earlier turns are
-/// invalidated. `run` results are never reused across turns regardless.
-fn begin_tool_turn(state: &AppState, session_id: &str) {
-    if let Some(index) = state.tool_observations.write().get_mut(session_id) {
-        index.epoch = index.epoch.saturating_add(1);
-    }
-}
-
 fn index_projection(
     state: &AppState,
     session_id: &str,
@@ -1217,9 +1229,10 @@ fn index_projection(
     let successful = projection.status == "completed" && projection.exit_code.unwrap_or(0) == 0;
     let mut indexes = state.tool_observations.write();
     let index = indexes.entry(session_id.to_owned()).or_default();
-    // A successful edit or run may have changed the workspace (or the world),
-    // so cached deterministic reads from before it are no longer trustworthy.
-    if successful && (call.name == "edit" || call.name == "run") {
+    // Keep deterministic observations reusable across user turns. Only a
+    // successful mutation or command invalidates them; this preserves the
+    // compact last-reference path without ever caching command execution.
+    if successful && matches!(call.name.as_str(), "write" | "edit" | "run") {
         index.epoch = index.epoch.saturating_add(1);
     }
     index.next_reference = index.next_reference.saturating_add(1);
@@ -1251,6 +1264,348 @@ fn index_projection(
         }
     }
     Some(reference)
+}
+
+struct QuietRuntimeSink<'a> {
+    parent: &'a dyn RuntimeEventSink,
+}
+
+impl RuntimeEventSink for QuietRuntimeSink<'_> {
+    fn emit(&self, _event: RuntimeEvent) {}
+
+    fn app_handle(&self) -> Option<&AppHandle> {
+        self.parent.app_handle()
+    }
+}
+
+#[derive(Debug)]
+struct SubagentRoute {
+    provider_id: String,
+    model_id: String,
+    endpoint: String,
+    adapter: String,
+    api_key: String,
+    user_agent: String,
+    thinking_enabled: bool,
+    thinking_effort: String,
+}
+
+fn lowest_supported_effort(model: &crate::types::ConfiguredModel) -> Option<String> {
+    ["minimal", "low", "medium", "high", "xhigh", "max"]
+        .into_iter()
+        .find(|effort| {
+            model
+                .thinking_efforts
+                .iter()
+                .any(|candidate| candidate == effort)
+        })
+        .map(str::to_owned)
+}
+
+fn resolve_subagent_route(
+    state: &AppState,
+    session_id: &str,
+    kind: &str,
+) -> KfResult<SubagentRoute> {
+    let settings = state.settings.read().clone();
+    let (main_provider, main_model) = state
+        .sessions
+        .read()
+        .get(session_id)
+        .map(|session| (session.provider_id.clone(), session.model_id.clone()))
+        .unwrap_or_else(|| (settings.provider_id.clone(), settings.model_id.clone()));
+    let (provider_id, model_id) = if kind == "execution"
+        && !settings.subagent_execution_provider_id.is_empty()
+        && !settings.subagent_execution_model_id.is_empty()
+    {
+        (
+            settings.subagent_execution_provider_id.clone(),
+            settings.subagent_execution_model_id.clone(),
+        )
+    } else {
+        (main_provider, main_model)
+    };
+    let profile = settings
+        .providers
+        .iter()
+        .find(|profile| profile.id == provider_id)
+        .cloned();
+    if profile.is_none() && provider_id != provider::PROVIDER_ID {
+        return Err(LocalizedError::new("error.provider_unsupported").arg("provider", provider_id));
+    }
+    let configured_model = profile
+        .as_ref()
+        .and_then(|profile| profile.models.iter().find(|model| model.id == model_id))
+        .cloned();
+    let (thinking_enabled, thinking_effort) = if kind == "reasoning" {
+        configured_model
+            .as_ref()
+            .map(|model| (model.thinking_enabled, model.thinking_effort.clone()))
+            .unwrap_or((false, "medium".into()))
+    } else {
+        let configured_effort = settings.subagent_execution_effort.as_str();
+        match (configured_effort, configured_model.as_ref()) {
+            ("none", _) => (false, "minimal".into()),
+            ("lowest", Some(model)) => lowest_supported_effort(model)
+                .map(|effort| (true, effort))
+                .unwrap_or((false, "minimal".into())),
+            (effort, Some(model)) if model.thinking_efforts.iter().any(|item| item == effort) => {
+                (true, effort.to_owned())
+            }
+            (_, Some(model)) => lowest_supported_effort(model)
+                .map(|effort| (true, effort))
+                .unwrap_or((false, "minimal".into())),
+            _ => (false, "minimal".into()),
+        }
+    };
+    let endpoint = profile
+        .as_ref()
+        .map(|profile| profile.base_url.clone())
+        .unwrap_or_else(|| provider::DEFAULT_BASE_URL.into());
+    let adapter = profile
+        .as_ref()
+        .map(|profile| provider::model_adapter(profile, &model_id))
+        .unwrap_or_else(|| "openai".into());
+    let api_key = profile
+        .as_ref()
+        .map(provider::resolved_api_key)
+        .transpose()?
+        .unwrap_or_else(|| "public".into());
+    let user_agent = profile
+        .as_ref()
+        .map(|profile| profile.user_agent.clone())
+        .unwrap_or_default();
+    Ok(SubagentRoute {
+        provider_id,
+        model_id,
+        endpoint,
+        adapter,
+        api_key,
+        user_agent,
+        thinking_enabled,
+        thinking_effort,
+    })
+}
+
+async fn run_subagent(
+    sink: &dyn RuntimeEventSink,
+    state: &Arc<AppState>,
+    session_id: &str,
+    root: Option<&str>,
+    call: &ToolCall,
+    cancellation: &CancellationToken,
+) -> KfResult<Value> {
+    let kind = string(&call.arguments, "kind")?;
+    if !["reasoning", "execution"].contains(&kind) {
+        return Err(LocalizedError::new("error.tool_argument").arg("field", "kind"));
+    }
+    let task = string(&call.arguments, "task")?;
+    let route = resolve_subagent_route(state, session_id, kind)?;
+    let active_turn = state
+        .active_turns
+        .read()
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| LocalizedError::new("error.session_cancelled"))?;
+    let child_turn_id = format!("{}:subagent:{}", active_turn.turn_id, call.id);
+    let quiet = QuietRuntimeSink { parent: sink };
+    let registry = BuiltinRegistry {
+        task_enabled: false,
+        skill_enabled: false,
+        subagent_enabled: false,
+        workspace_available: root.is_some(),
+    };
+    let tool_definitions = wire_tools(&registry);
+    let system = format!(
+        "You are a KnightFrame {kind} subagent in an isolated context. Complete only the delegated task. Use tools for evidence and real changes. Do not delegate again. Return a concise result with changed files or verification evidence."
+    );
+    let mut messages = vec![json!({"role":"system","content":system})];
+    if let Some(root) = root
+        && let Ok(context) = project::model_context(state, root)
+    {
+        messages.push(context_message(&context));
+    }
+    let delegated_context = call
+        .arguments
+        .get("context")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let user = if delegated_context.trim().is_empty() {
+        task.to_owned()
+    } else {
+        format!("{task}\n\nAdditional facts:\n{delegated_context}")
+    };
+    messages.push(json!({"role":"user","content":user}));
+    let mut usage = TokenUsage::default();
+    let mut steps = Vec::<Value>::new();
+    let mut final_text = String::new();
+    let mut round = 0_u64;
+    let mut finalization_retries = 0_u8;
+    let mut tool_protocol_retries = 0_u8;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(LocalizedError::new("error.session_cancelled"));
+        }
+        let response = match provider::stream_turn(
+            &quiet,
+            state,
+            provider::StreamTurnRequest {
+                session_id,
+                turn_id: &child_turn_id,
+                model: &route.model_id,
+                messages: &messages,
+                tools: &tool_definitions,
+                active_turn: &active_turn,
+                endpoint: &route.endpoint,
+                adapter: &route.adapter,
+                api_key: &route.api_key,
+                user_agent: &route.user_agent,
+                thinking: provider::ThinkingOptions {
+                    enabled: route.thinking_enabled,
+                    effort: &route.thinking_effort,
+                },
+            },
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(failure)
+                if recoverable_tool_protocol_error(&failure.error.key)
+                    && tool_protocol_retries < 3 =>
+            {
+                commit_round_usage(
+                    sink,
+                    state,
+                    session_id,
+                    &child_turn_id,
+                    round,
+                    &failure.partial.usage,
+                );
+                usage.add(&failure.partial.usage);
+                if let Some(message) = assistant_wire_message(
+                    &route.adapter,
+                    &failure.partial.text,
+                    &failure.partial.reasoning,
+                    Vec::new(),
+                ) {
+                    messages.push(message);
+                }
+                tool_protocol_retries += 1;
+                messages.push(context_message(&format!(
+                    "{TOOL_CAPABILITY_RECOVERY} Failure: {}. Attempt {}/3.",
+                    failure.error.key, tool_protocol_retries
+                )));
+                round = round.saturating_add(1);
+                continue;
+            }
+            Err(failure) => return Err(failure.error),
+        };
+        tool_protocol_retries = 0;
+        commit_round_usage(
+            sink,
+            state,
+            session_id,
+            &child_turn_id,
+            round,
+            &response.usage,
+        );
+        usage.add(&response.usage);
+        final_text.push_str(&response.text);
+        if response.interrupted_by_guidance {
+            return Ok(json!({
+                "content": "Subagent interrupted by newer user guidance.",
+                "kind": kind,
+                "provider": route.provider_id,
+                "model": route.model_id,
+                "effort": route.thinking_effort,
+                "interrupted": true,
+                "steps": steps,
+                "usage": usage,
+            }));
+        }
+        if response.tool_calls.is_empty() {
+            let reasoning_only =
+                response.text.trim().is_empty() && !response.reasoning.trim().is_empty();
+            if let Some(message) = assistant_wire_message(
+                &route.adapter,
+                &response.text,
+                &response.reasoning,
+                Vec::new(),
+            ) {
+                messages.push(message);
+            }
+            if response.finish_reason.as_deref() == Some("length") {
+                messages.push(context_message(CONTINUE_RESPONSE));
+                round = round.saturating_add(1);
+                continue;
+            }
+            if reasoning_only && finalization_retries < 2 {
+                finalization_retries += 1;
+                messages.push(context_message(FINALIZE_RESPONSE));
+                round = round.saturating_add(1);
+                continue;
+            }
+            if final_text.trim().is_empty() {
+                return Err(LocalizedError::new("error.provider_response_empty"));
+            }
+            return Ok(json!({
+                "content": final_text,
+                "kind": kind,
+                "provider": route.provider_id,
+                "model": route.model_id,
+                "effort": route.thinking_effort,
+                "rounds": round + 1,
+                "steps": steps,
+                "usage": usage,
+            }));
+        }
+        let wire_calls = response
+            .tool_calls
+            .iter()
+            .map(|tool| json!({"id":tool.id,"type":"function","function":{"name":tool.name,"arguments":tool.arguments.to_string()}}))
+            .collect();
+        messages.push(
+            assistant_wire_message(
+                &route.adapter,
+                &response.text,
+                &response.reasoning,
+                wire_calls,
+            )
+            .expect("subagent tool-call messages are never empty"),
+        );
+        for child_call in response.tool_calls {
+            let projection = if child_call.name == "subagent" {
+                failed_projection(
+                    &child_call.name,
+                    &LocalizedError::new("error.tool_unknown").arg("tool", "subagent"),
+                )
+            } else if let Some((projection, _reference)) =
+                cached_observation(state, session_id, &child_call)
+            {
+                projection
+            } else {
+                let result = Box::pin(dispatch(
+                    &quiet,
+                    state,
+                    session_id,
+                    root,
+                    &child_call,
+                    cancellation,
+                ))
+                .await;
+                let mut projection = match result {
+                    Ok(projection) => projection,
+                    Err(error) => failed_projection(&child_call.name, &error),
+                };
+                index_projection(state, session_id, &child_call, &mut projection);
+                projection
+            };
+            steps.push(json!({"tool":child_call.name,"status":projection.status}));
+            let content = serde_json::to_string(&projection).unwrap_or_default();
+            messages.push(json!({"role":"tool","tool_call_id":child_call.id,"content":content}));
+        }
+        round = round.saturating_add(1);
+    }
 }
 
 async fn dispatch(
@@ -1364,6 +1719,7 @@ async fn dispatch(
                 "truncated": prior.truncated,
             })
         }
+        "subagent" => run_subagent(sink, state, session_id, root, call, cancellation).await?,
         "task" => {
             let snapshot = {
                 let mut tasks = state.tasks.write();
@@ -2271,7 +2627,12 @@ pub(crate) async fn run_with_sink(
     let configured_model = profile
         .as_ref()
         .and_then(|profile| profile.models.iter().find(|model| model.id == model_id));
-    let context_limit = configured_model.and_then(|model| model.context_limit);
+    let context_limit = configured_model.and_then(|model| {
+        model
+            .context_window
+            .filter(|window| model.context_limit.is_none_or(|limit| *window <= limit))
+            .or(model.context_limit)
+    });
     let thinking_enabled = configured_model.is_some_and(|model| model.thinking_enabled);
     let thinking_effort = configured_model
         .map(|model| model.thinking_effort.as_str())
@@ -2305,10 +2666,10 @@ pub(crate) async fn run_with_sink(
         return Err(LocalizedError::new("error.session_cancelled"));
     }
     let settings = state.settings.read().clone();
-    begin_tool_turn(&state, &session_id);
     let registry = BuiltinRegistry {
         task_enabled: settings.task_manager,
         skill_enabled: settings.skill_router,
+        subagent_enabled: settings.subagent_enabled,
         workspace_available: root.is_some(),
     };
     let tool_definitions = wire_tools(&registry);
@@ -2374,7 +2735,7 @@ pub(crate) async fn run_with_sink(
     let mut total_usage = TokenUsage::default();
     let mut final_text = String::new();
     let mut round = 0_u64;
-    let mut tool_capability_retries = 0_u8;
+    let mut tool_protocol_retries = 0_u8;
     let mut finalization_retries = 0_u8;
     loop {
         if cancellation.is_cancelled() {
@@ -2428,19 +2789,27 @@ pub(crate) async fn run_with_sink(
                             reasoning: failure.partial.reasoning.clone(),
                         });
                 }
-                if failure.error.key == "error.provider_tool_capability"
-                    && tool_capability_retries < 2
+                if recoverable_tool_protocol_error(&failure.error.key) && tool_protocol_retries < 3
                 {
-                    tool_capability_retries += 1;
-                    if !failure.partial.text.is_empty() {
-                        messages.push(json!({"role":"assistant","content":failure.partial.text}));
+                    tool_protocol_retries += 1;
+                    if let Some(message) = assistant_wire_message(
+                        &adapter,
+                        &failure.partial.text,
+                        &failure.partial.reasoning,
+                        Vec::new(),
+                    ) {
+                        messages.push(message);
                     }
-                    messages.push(context_message(TOOL_CAPABILITY_RECOVERY));
+                    let recovery = format!(
+                        "{TOOL_CAPABILITY_RECOVERY} Failure: {}. Attempt {}/3.",
+                        failure.error.key, tool_protocol_retries
+                    );
+                    messages.push(context_message(&recovery));
                     record_context(
                         &state,
                         &session_id,
-                        "provider-tool-recovery",
-                        TOOL_CAPABILITY_RECOVERY.to_owned(),
+                        &format!("provider-tool-recovery:{turn_id}:{tool_protocol_retries}"),
+                        recovery,
                     );
                     round = round.saturating_add(1);
                     continue;
@@ -2790,6 +3159,7 @@ mod tests {
         let registry = BuiltinRegistry {
             task_enabled: true,
             skill_enabled: true,
+            subagent_enabled: true,
             workspace_available: true,
         };
         let names: Vec<_> = registry.active().iter().map(|tool| tool.name).collect();
@@ -2807,6 +3177,7 @@ mod tests {
                 "browser",
                 "market",
                 "recall",
+                "subagent",
                 "skill",
                 "task"
             ]
@@ -2837,7 +3208,7 @@ mod tests {
         }
         assert!(SYSTEM.contains("Batch independent find/search/read queries"));
         assert!(SYSTEM.contains("shell remains available"));
-        assert!(SYSTEM.contains("project graph"));
+        assert!(SYSTEM.contains("project-component index"));
         assert!(SYSTEM.contains("Keep the task plan current"));
         assert!(CAVEMAN_LITE.contains("minimum necessary words"));
         assert!(CAVEMAN_LITE.contains("No pleasantries"));
@@ -2849,6 +3220,7 @@ mod tests {
         let registry = BuiltinRegistry {
             task_enabled: true,
             skill_enabled: true,
+            subagent_enabled: true,
             workspace_available: true,
         };
         let first = serde_json::to_vec(&wire_tools(&registry)).unwrap();
@@ -3439,6 +3811,7 @@ mod tests {
         let registry = BuiltinRegistry {
             task_enabled: true,
             skill_enabled: true,
+            subagent_enabled: true,
             workspace_available: false,
         };
         let names: Vec<_> = registry.active().iter().map(|tool| tool.name).collect();
@@ -3451,6 +3824,7 @@ mod tests {
                 "browser",
                 "market",
                 "recall",
+                "subagent",
                 "skill",
                 "task"
             ]
@@ -3463,6 +3837,7 @@ mod tests {
         let registry = BuiltinRegistry {
             task_enabled: true,
             skill_enabled: true,
+            subagent_enabled: true,
             workspace_available: true,
         };
         let names: Vec<_> = registry.active().iter().map(|tool| tool.name).collect();
@@ -3482,6 +3857,7 @@ mod tests {
                 "browser",
                 "market",
                 "recall",
+                "subagent",
                 "skill",
                 "task"
             ]
@@ -3671,6 +4047,96 @@ mod tests {
         assert!(projection.summary.contains("Verified public documentation"));
     }
 
+    #[tokio::test]
+    async fn execution_subagent_runs_in_an_isolated_provider_turn() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::AtomicBool;
+        use tokio::sync::Notify;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 8192];
+            let read = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("POST /v1/chat/completions"));
+            let body = concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"verified child result\"},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n"
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let mut settings = crate::types::SettingsSnapshot::default();
+        settings.providers.push(crate::types::ProviderProfile {
+            id: "relay".into(),
+            name: "Relay".into(),
+            adapter: "openai".into(),
+            base_url: format!("http://{address}/v1"),
+            user_agent: String::new(),
+            api_key: String::new(),
+            credential_ref: String::new(),
+            models: vec![crate::types::ConfiguredModel {
+                id: "child-model".into(),
+                name: "Child".into(),
+                adapter: Some("openai".into()),
+                capabilities: vec!["streaming".into(), "toolCalls".into()],
+                context_limit: Some(32_000),
+                context_window: Some(16_000),
+                thinking_enabled: false,
+                thinking_effort: "medium".into(),
+                thinking_toggle: false,
+                thinking_efforts: Vec::new(),
+                catalog_synced: true,
+            }],
+        });
+        let state = AppState::new(settings);
+        state.sessions.write().insert(
+            "session".into(),
+            crate::types::SessionSnapshot {
+                id: "session".into(),
+                title: "test".into(),
+                provider_id: "relay".into(),
+                model_id: "child-model".into(),
+                project_root: None,
+                status: "streaming".into(),
+                last_error: None,
+                messages: Vec::new(),
+                task: None,
+                usage: Default::default(),
+            },
+        );
+        let cancellation = CancellationToken::new();
+        state.active_turns.write().insert(
+            "session".into(),
+            ActiveTurn {
+                turn_id: "turn".into(),
+                cancellation: cancellation.clone(),
+                guidance: Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new())),
+                accepting_guidance: Arc::new(AtomicBool::new(true)),
+                guidance_signal: Arc::new(Notify::new()),
+            },
+        );
+        let call = ToolCall {
+            index: 0,
+            id: "subagent-1".into(),
+            name: "subagent".into(),
+            arguments: json!({"kind":"execution","task":"Return the verification."}),
+        };
+        let projection = dispatch(&NoopSink, &state, "session", None, &call, &cancellation)
+            .await
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(projection.status, "completed");
+        assert!(projection.summary.contains("verified child result"));
+    }
+
     #[test]
     fn compact_receipts_do_not_advertise_recall() {
         let projection = ToolProjection {
@@ -3838,7 +4304,7 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_reads_reuse_until_run_edit_or_new_turn() {
+    fn deterministic_reads_reuse_across_turns_until_a_mutation() {
         let state = AppState::new(Default::default());
         let read = ToolCall {
             index: 0,
@@ -3881,11 +4347,29 @@ mod tests {
         index_projection(&state, "session", &run, &mut run_projection);
         assert!(cached_observation(&state, "session", &read).is_none());
 
-        // Fresh read re-executes and is cacheable again…
+        // Fresh read re-executes and remains reusable across user turns.
         index_projection(&state, "session", &read, &mut read_projection);
         assert!(cached_observation(&state, "session", &read).is_some());
-        // …until the next user turn invalidates it.
-        begin_tool_turn(&state, "session");
+        assert!(cached_observation(&state, "session", &read).is_some());
+
+        // A successful write invalidates old observations just like edit/run.
+        let write = ToolCall {
+            index: 2,
+            id: "write-1".into(),
+            name: "write".into(),
+            arguments: json!({"path":"src/new.rs","content":"pub fn value() {}"}),
+        };
+        let mut write_projection = ToolProjection {
+            status: "completed".into(),
+            total: 1,
+            summary: "created src/new.rs".into(),
+            exit_code: Some(0),
+            error_key: None,
+            completeness: "complete".into(),
+            truncated: false,
+            artifact_id: String::new(),
+        };
+        index_projection(&state, "session", &write, &mut write_projection);
         assert!(cached_observation(&state, "session", &read).is_none());
     }
 

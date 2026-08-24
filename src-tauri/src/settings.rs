@@ -87,6 +87,9 @@ pub fn kf_settings_update(
     let auxiliary_selection_changed =
         patch.auxiliary_provider_id.is_some() || patch.auxiliary_model_id.is_some();
     let auxiliary_enabling = patch.auxiliary_enabled == Some(true);
+    let subagent_selection_changed = patch.subagent_execution_provider_id.is_some()
+        || patch.subagent_execution_model_id.is_some();
+    let subagent_enabling = patch.subagent_enabled == Some(true);
     let mut next = state.settings.read().clone();
     let previous_credentials = next
         .providers
@@ -152,6 +155,25 @@ pub fn kf_settings_update(
     if let Some(value) = patch.auxiliary_model_id {
         next.auxiliary_model_id = value;
     }
+    if let Some(value) = patch.subagent_enabled {
+        next.subagent_enabled = value;
+    }
+    if let Some(value) = patch.subagent_execution_provider_id {
+        next.subagent_execution_provider_id = value;
+    }
+    if let Some(value) = patch.subagent_execution_model_id {
+        next.subagent_execution_model_id = value;
+    }
+    if let Some(value) = patch.subagent_execution_effort {
+        if ![
+            "lowest", "none", "minimal", "low", "medium", "high", "xhigh", "max",
+        ]
+        .contains(&value.as_str())
+        {
+            return Err(LocalizedError::new("error.settings_thinking_effort"));
+        }
+        next.subagent_execution_effort = value;
+    }
     if let Some(value) = patch.skill_router {
         next.skill_router = value;
     }
@@ -179,6 +201,17 @@ pub fn kf_settings_update(
     }
     if auxiliary_selection_changed || auxiliary_enabling {
         validate_auxiliary_selection(&next, &provider::available_model_keys(&next.providers))?;
+    }
+    if (subagent_selection_changed || subagent_enabling || providers_changed)
+        && next.subagent_enabled
+        && (!next.subagent_execution_provider_id.is_empty()
+            || !next.subagent_execution_model_id.is_empty())
+    {
+        provider::validate_available_model(
+            &next.subagent_execution_provider_id,
+            &next.subagent_execution_model_id,
+            &provider::available_model_keys(&next.providers),
+        )?;
     }
     persist(&app, &next)?;
     if providers_changed {

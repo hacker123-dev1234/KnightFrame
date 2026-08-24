@@ -17,6 +17,7 @@ export interface ProviderModel {
   available: boolean;
   capabilities?: string[];
   contextLimit?: number;
+  contextWindow?: number;
   thinkingEnabled: boolean;
   thinkingEffort: ThinkingEffort;
   thinkingToggle: boolean;
@@ -26,7 +27,7 @@ export interface ProviderModel {
 
 export type ProviderAdapter = 'openai' | 'openai-responses' | 'anthropic' | 'gemini';
 export type ThinkingEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-export interface ConfiguredModel { id: string; name: string; adapter?: ProviderAdapter; capabilities: string[]; contextLimit?: number; thinkingEnabled?: boolean; thinkingEffort?: ThinkingEffort; thinkingToggle?: boolean; thinkingEfforts?: ThinkingEffort[]; catalogSynced?: boolean; }
+export interface ConfiguredModel { id: string; name: string; adapter?: ProviderAdapter; capabilities: string[]; contextLimit?: number; contextWindow?: number; thinkingEnabled?: boolean; thinkingEffort?: ThinkingEffort; thinkingToggle?: boolean; thinkingEfforts?: ThinkingEffort[]; catalogSynced?: boolean; }
 export interface ProviderProfile { id: string; name: string; adapter: ProviderAdapter; baseUrl: string; userAgent: string; apiKey: string; credentialRef: string; models: ConfiguredModel[]; }
 export interface ProviderTemplate { id: string; name: string; adapter: ProviderAdapter; baseUrl: string; apiKeyEnv: string; }
 
@@ -53,6 +54,10 @@ export interface SettingsSnapshot {
   auxiliaryEnabled: boolean;
   auxiliaryProviderId?: string;
   auxiliaryModelId?: string;
+  subagentEnabled?: boolean;
+  subagentExecutionProviderId?: string;
+  subagentExecutionModelId?: string;
+  subagentExecutionEffort?: 'lowest' | ThinkingEffort;
   skillRouter?: boolean;
   skillOpt?: boolean;
   memoryEnabled?: boolean;
@@ -166,6 +171,7 @@ export interface GraphNode {
   label: string;
   kind: 'file' | 'directory' | string;
   path: string;
+  component: string;
   line?: number;
   weight: number;
 }
@@ -181,7 +187,7 @@ export interface GraphSnapshot {
   root: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
-  stats: { files: number; directories: number; dependencies: number };
+  stats: { files: number; directories: number; dependencies: number; components: number };
 }
 
 export interface SessionSnapshot {

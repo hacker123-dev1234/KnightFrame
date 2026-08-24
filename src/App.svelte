@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { app, activeSession, bootstrap, configureModelThinking, createSession, deleteSession, destroy, loadGraph, openProject, renameSession, runBrowserCommand, selectModel, selectSession, setPage, stopActive, submit, toggleBrowserPanel, toggleSidebar, toggleTasks, toggleUsage, updateSettings } from './lib/state';
+  import { app, activeSession, bootstrap, configureModelContext, configureModelThinking, createSession, deleteSession, destroy, loadGraph, openProject, renameSession, runBrowserCommand, selectModel, selectSession, setPage, stopActive, submit, toggleBrowserPanel, toggleSidebar, toggleTasks, toggleUsage, updateSettings } from './lib/state';
   import { bridge } from './lib/bridge';
   import { translate } from './lib/i18n';
   import { applyUiScale } from './lib/uiScale';
@@ -42,8 +42,8 @@
   $: contextTokens = typeof $activeSession?.usage?.currentContextTokens === 'number'
     ? $activeSession.usage.currentContextTokens
     : undefined;
-  $: contextLimit = typeof selectedModel?.contextLimit === 'number' && selectedModel.contextLimit > 0
-    ? selectedModel.contextLimit
+  $: contextLimit = typeof (selectedModel?.contextWindow ?? selectedModel?.contextLimit) === 'number' && (selectedModel?.contextWindow ?? selectedModel?.contextLimit ?? 0) > 0
+    ? (selectedModel?.contextWindow ?? selectedModel?.contextLimit)
     : undefined;
   $: contextUsageRate = contextTokens !== undefined && contextLimit !== undefined
     ? Math.min(100, Math.round((contextTokens / contextLimit) * 100))
@@ -169,6 +169,7 @@
           onUsage={toggleUsage}
           onSelectModel={selectModel}
           onConfigureThinking={configureModelThinking}
+          onConfigureContext={configureModelContext}
         />
         <div class:browser-docked={$app.browserPanelOpen} class="workspace-content">
           {#if $app.browserPanelOpen}

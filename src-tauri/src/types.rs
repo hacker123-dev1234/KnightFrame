@@ -24,6 +24,14 @@ pub struct SettingsSnapshot {
     #[serde(default)]
     pub auxiliary_model_id: String,
     #[serde(default = "default_true")]
+    pub subagent_enabled: bool,
+    #[serde(default)]
+    pub subagent_execution_provider_id: String,
+    #[serde(default)]
+    pub subagent_execution_model_id: String,
+    #[serde(default = "default_subagent_execution_effort")]
+    pub subagent_execution_effort: String,
+    #[serde(default = "default_true")]
     pub skill_router: bool,
     #[serde(default = "default_true")]
     pub skill_opt: bool,
@@ -45,6 +53,10 @@ fn default_ui_scale() -> f64 {
     1.0
 }
 
+fn default_subagent_execution_effort() -> String {
+    "lowest".into()
+}
+
 impl Default for SettingsSnapshot {
     fn default() -> Self {
         Self {
@@ -59,6 +71,10 @@ impl Default for SettingsSnapshot {
             auxiliary_enabled: false,
             auxiliary_provider_id: String::new(),
             auxiliary_model_id: String::new(),
+            subagent_enabled: true,
+            subagent_execution_provider_id: String::new(),
+            subagent_execution_model_id: String::new(),
+            subagent_execution_effort: default_subagent_execution_effort(),
             skill_router: true,
             skill_opt: true,
             memory_enabled: false,
@@ -81,6 +97,10 @@ pub struct SettingsPatch {
     pub auxiliary_enabled: Option<bool>,
     pub auxiliary_provider_id: Option<String>,
     pub auxiliary_model_id: Option<String>,
+    pub subagent_enabled: Option<bool>,
+    pub subagent_execution_provider_id: Option<String>,
+    pub subagent_execution_model_id: Option<String>,
+    pub subagent_execution_effort: Option<String>,
     pub skill_router: Option<bool>,
     pub skill_opt: Option<bool>,
     pub memory_enabled: Option<bool>,
@@ -116,7 +136,11 @@ pub struct ConfiguredModel {
     pub adapter: Option<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Catalog-advertised maximum context.
     pub context_limit: Option<u64>,
+    /// User-selected working window. None means use the catalog maximum.
+    #[serde(default)]
+    pub context_window: Option<u64>,
     /// Normalized model-level reasoning controls. Adapters translate these to
     /// their native wire format; older settings remain valid and default off.
     #[serde(default)]
@@ -158,6 +182,7 @@ pub struct ProviderModel {
     pub available: bool,
     pub capabilities: Vec<String>,
     pub context_limit: Option<u64>,
+    pub context_window: Option<u64>,
     pub thinking_enabled: bool,
     pub thinking_effort: String,
     pub thinking_toggle: bool,
@@ -254,6 +279,9 @@ pub struct GraphNode {
     pub label: String,
     pub kind: String,
     pub path: String,
+    /// Virtual project-component directory. Nodes in different components have
+    /// no dependency path and are never joined by containment edges.
+    pub component: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<usize>,
     pub weight: f32,
@@ -274,6 +302,7 @@ pub struct GraphStats {
     pub files: usize,
     pub directories: usize,
     pub dependencies: usize,
+    pub components: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

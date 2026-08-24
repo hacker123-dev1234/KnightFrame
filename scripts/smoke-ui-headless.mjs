@@ -389,6 +389,9 @@ try {
     const entry = document.querySelector('button[title="Settings"], button[title="设置"]');
     entry?.click();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const auxiliarySection = [...document.querySelectorAll('details.settings-section')]
+      .find((section) => /Auxiliary|小模型/.test(section.querySelector('summary')?.textContent ?? ''));
+    if (auxiliarySection) auxiliarySection.open = true;
     const choices = [...document.querySelectorAll('.auxiliary-source-picker button')];
     const localActive = choices[0]?.classList.contains('active');
     choices[1]?.click();
@@ -396,6 +399,10 @@ try {
     const form = document.querySelector('.auxiliary-endpoint-form');
     const password = form?.querySelector('input[type="password"]');
     const modelInput = [...(form?.querySelectorAll('input') ?? [])].find((input) => input.placeholder?.includes('model') || input.placeholder?.includes('模型'));
+    const subagent = document.querySelector('.subagent-settings');
+    const subagentToggle = subagent?.querySelector('input[type="checkbox"]');
+    const subagentSelectors = subagent?.querySelectorAll('select') ?? [];
+    auxiliarySection?.scrollIntoView({ block: 'start' });
     return {
       page: Boolean(document.querySelector('.settings-page')),
       choices: choices.length,
@@ -403,10 +410,14 @@ try {
       networkActive: choices[1]?.classList.contains('active'),
       password: Boolean(password),
       modelInput: Boolean(modelInput),
+      subagent: Boolean(subagent),
+      subagentToggle: Boolean(subagentToggle),
+      subagentSelectors: subagentSelectors.length,
       overflow: form ? form.scrollWidth > form.clientWidth : true,
+      subagentOverflow: subagent ? subagent.scrollWidth > subagent.clientWidth : true,
     };
   })()`);
-  if (!auxiliarySettings.page || auxiliarySettings.choices !== 2 || !auxiliarySettings.localActive || !auxiliarySettings.networkActive || !auxiliarySettings.password || !auxiliarySettings.modelInput || auxiliarySettings.overflow) {
+  if (!auxiliarySettings.page || auxiliarySettings.choices !== 2 || !auxiliarySettings.localActive || !auxiliarySettings.networkActive || !auxiliarySettings.password || !auxiliarySettings.modelInput || !auxiliarySettings.subagent || !auxiliarySettings.subagentToggle || auxiliarySettings.subagentSelectors !== 2 || auxiliarySettings.overflow || auxiliarySettings.subagentOverflow) {
     throw new Error(`Auxiliary model configuration is incomplete: ${JSON.stringify(auxiliarySettings)}`);
   }
   const settingsShot = await screenshot(cdp, 'settings-auxiliary-headless.png');

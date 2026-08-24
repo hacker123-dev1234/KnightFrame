@@ -172,11 +172,19 @@ fn spawn_refresh_loop(app: AppHandle, state: Arc<MarketState>, subscription: Sub
     tokio::spawn(async move {
         let mut failures: u32 = 0;
         let mut announced_source: Option<String> = None;
+        let mut cached_bars = Vec::<types::KlineBar>::new();
+        let mut cached_source: Option<String> = None;
+        let mut last_emitted_bar: Option<types::KlineBar> = None;
         loop {
             if cancellation.is_cancelled() {
                 break;
             }
-            let fetch_count = subscription.n_bars as usize + types::INDICATOR_WARMUP_BARS + 5;
+            let full_count = subscription.n_bars as usize + types::INDICATOR_WARMUP_BARS + 5;
+            let fetch_count = if cached_bars.is_empty() {
+                full_count
+            } else {
+                8
+            };
             let result = datasource::fetch_bars_resolved(
                 &client,
                 &subscription.source,
@@ -187,8 +195,48 @@ fn spawn_refresh_loop(app: AppHandle, state: Arc<MarketState>, subscription: Sub
             )
             .await;
             match result {
-                Ok((resolved_source, bars)) if !bars.is_empty() => {
+                Ok((mut resolved_source, mut bars)) if !bars.is_empty() => {
                     failures = 0;
+                    let same_source = cached_source.as_deref() == Some(resolved_source.as_str());
+                    let mut complete_window = cached_bars.is_empty();
+                    if !cached_bars.is_empty()
+                        && !same_source
+                        && let Ok((full_source, full_bars)) = datasource::fetch_bars_resolved(
+                            &client,
+                            &resolved_source,
+                            &subscription.symbol,
+                            &subscription.exchange,
+                            &subscription.timeframe,
+                            full_count,
+                        )
+                        .await
+                    {
+                        resolved_source = full_source;
+                        bars = full_bars;
+                        complete_window = true;
+                    }
+                    if same_source {
+                        for previous in cached_bars.drain(..) {
+                            if !bars.iter().any(|bar| bar.ts_open == previous.ts_open) {
+                                bars.push(previous);
+                            }
+                        }
+                        bars.sort_by(|left, right| {
+                            right
+                                .ts_open
+                                .partial_cmp(&left.ts_open)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        bars.truncate(full_count.saturating_add(1));
+                        datasource::rebase(&mut bars);
+                    }
+                    if complete_window || same_source {
+                        cached_source = Some(resolved_source.clone());
+                        cached_bars = bars.clone();
+                    } else {
+                        cached_source = None;
+                        cached_bars.clear();
+                    }
                     // 跨源兜底命中：明确告知用户实际生效的数据源
                     if resolved_source != subscription.source
                         && announced_source.as_deref() != Some(resolved_source.as_str())
@@ -205,20 +253,23 @@ fn spawn_refresh_loop(app: AppHandle, state: Arc<MarketState>, subscription: Sub
                             }),
                         );
                     }
-                    let now = records::now_ms();
-                    if let Some(frame) = indicators::build_live_frame(
-                        &bars,
-                        subscription.n_bars as usize,
-                        &subscription.symbol,
-                        &subscription.timeframe,
-                        now,
-                    ) {
-                        *state.last_frame.write() = Some(frame.clone());
-                        emit_market(
-                            &app,
-                            "market.frame",
-                            json!({"frame": frame, "source": resolved_source}),
-                        );
+                    if bars.first().copied() != last_emitted_bar {
+                        last_emitted_bar = bars.first().copied();
+                        let now = records::now_ms();
+                        if let Some(frame) = indicators::build_live_frame(
+                            &bars,
+                            subscription.n_bars as usize,
+                            &subscription.symbol,
+                            &subscription.timeframe,
+                            now,
+                        ) {
+                            *state.last_frame.write() = Some(frame.clone());
+                            emit_market(
+                                &app,
+                                "market.frame",
+                                json!({"frame": frame, "source": resolved_source}),
+                            );
+                        }
                     }
                 }
                 Ok(_) => {}
@@ -249,6 +300,16 @@ fn spawn_refresh_loop(app: AppHandle, state: Arc<MarketState>, subscription: Sub
 // Tauri 命令
 // ---------------------------------------------------------------------------
 
+const MIN_ANALYSIS_BARS: u32 = 20;
+const MAX_ANALYSIS_BARS: u32 = 5_000;
+
+fn validate_bar_count(n_bars: u32) -> KfResult<u32> {
+    if !(MIN_ANALYSIS_BARS..=MAX_ANALYSIS_BARS).contains(&n_bars) {
+        return Err(LocalizedError::new("error.market_bar_count"));
+    }
+    Ok(n_bars)
+}
+
 #[tauri::command]
 pub async fn kf_market_settings_get(
     state: tauri::State<'_, Arc<MarketState>>,
@@ -274,9 +335,7 @@ pub async fn kf_market_settings_update(
     if !["strict", "lenient"].contains(&settings.validation.normalization_mode.as_str()) {
         return Err(LocalizedError::new("error.market_validation_mode"));
     }
-    if settings.general.analysis_bar_count < 20 || settings.general.analysis_bar_count > 5000 {
-        return Err(LocalizedError::new("error.market_bar_count"));
-    }
+    validate_bar_count(settings.general.analysis_bar_count)?;
     if !datasource::SOURCE_KINDS.contains(&settings.general.last_data_source.as_str()) {
         return Err(LocalizedError::new("error.market_source")
             .arg("source", settings.general.last_data_source.clone()));
@@ -300,7 +359,9 @@ pub async fn kf_market_fetch(
     n_bars: Option<u32>,
 ) -> KfResult<Value> {
     let exchange = exchange.unwrap_or_default();
-    let n_bars = n_bars.unwrap_or_else(|| state.settings.read().general.analysis_bar_count);
+    let n_bars = validate_bar_count(
+        n_bars.unwrap_or_else(|| state.settings.read().general.analysis_bar_count),
+    )?;
     let (resolved_source, bars) = datasource::fetch_bars_resolved(
         &state_client(&app),
         &source,
@@ -353,7 +414,7 @@ pub async fn kf_market_subscribe(
         settings.general.last_timeframe = timeframe;
     }
     let interval_ms = settings.general.refresh_interval_ms;
-    let n_bars = settings.general.analysis_bar_count;
+    let n_bars = validate_bar_count(settings.general.analysis_bar_count)?;
     let _ = state.persist_settings();
     drop(settings);
     let subscription = Subscription {
@@ -636,4 +697,18 @@ fn state_client(_app: &AppHandle) -> reqwest::Client {
         .connect_timeout(std::time::Duration::from_secs(10))
         .build()
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn market_bar_count_has_one_shared_hard_limit() {
+        assert!(validate_bar_count(19).is_err());
+        assert_eq!(validate_bar_count(20).unwrap(), 20);
+        assert_eq!(validate_bar_count(5_000).unwrap(), 5_000);
+        assert!(validate_bar_count(5_001).is_err());
+        assert!(validate_bar_count(u32::MAX).is_err());
+    }
 }

@@ -59,6 +59,10 @@ const defaults: AppState = {
     auxiliaryEnabled: false,
     auxiliaryProviderId: '',
     auxiliaryModelId: '',
+    subagentEnabled: true,
+    subagentExecutionProviderId: '',
+    subagentExecutionModelId: '',
+    subagentExecutionEffort: 'lowest',
     providers: [],
   },
   providers: [],
@@ -557,7 +561,7 @@ export async function updateSettings(patch: Partial<SettingsSnapshot>): Promise<
   const snapshot = await bridge.updateSettings(patch);
   const providers = snapshot.providers.flatMap((profile) => profile.models.map((model) => ({
     providerId: profile.id, providerName: profile.name, modelId: model.id, modelName: model.name || model.id,
-    available: true, capabilities: model.capabilities, contextLimit: model.contextLimit,
+    available: true, capabilities: model.capabilities, contextLimit: model.contextLimit, contextWindow: model.contextWindow,
     thinkingEnabled: model.thinkingEnabled ?? false, thinkingEffort: model.thinkingEffort ?? 'medium',
     thinkingToggle: model.thinkingToggle ?? false, thinkingEfforts: model.thinkingEfforts ?? [],
     adapter: model.adapter ?? profile.adapter,
@@ -578,6 +582,23 @@ export async function configureModelThinking(
         ...profile,
         models: profile.models.map((model) => model.id === modelId
           ? { ...model, thinkingEnabled: enabled, thinkingEffort: effort }
+          : model),
+      }
+    : profile);
+  await updateSettings({ providers: profiles });
+}
+
+export async function configureModelContext(
+  providerId: string,
+  modelId: string,
+  contextWindow: number,
+): Promise<void> {
+  const state = get(app);
+  const profiles = state.settings.providers.map((profile) => profile.id === providerId
+    ? {
+        ...profile,
+        models: profile.models.map((model) => model.id === modelId
+          ? { ...model, contextWindow }
           : model),
       }
     : profile);

@@ -40,6 +40,20 @@ flowchart LR
 
 当前为 Beta。核心对话、项目索引、工具、模型适配、内置浏览器和插件工坊可用；协议兼容性仍会随供应商行为继续校正。
 
+## 插件工坊宿主预览
+
+KnightFrame 预览使用构建产物内嵌的界面，不需要额外放置 KnightFrame 源码。插件设计和适配器导出也不依赖 DSH。
+
+真实 DSH 宿主预览需要本机存在已构建的 DSH 仓库。准备 Node.js 22.19+ 和 pnpm 11.7+，在 DSH 根目录执行：
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm build
+[Environment]::SetEnvironmentVariable("KF_DSH_ROOT", "D:\Projects\deepseek-harness-master", "User")
+```
+
+`KF_DSH_ROOT` 应指向包含 `apps/cli/lib/bin.js` 的仓库根目录。重启 KnightFrame 后生效。也可将该仓库命名为 `deepseek-harness-master`，放在 `KnightFrame.exe` 同级目录或其上一级目录。
+
 ## 构建
 
 需要 Rust stable、Node.js 20+、pnpm 9+、Windows WebView2 和 Visual Studio C++ Build Tools。

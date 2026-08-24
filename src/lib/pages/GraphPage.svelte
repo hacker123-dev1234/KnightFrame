@@ -25,7 +25,7 @@
   <header class="graph-header" data-tauri-drag-region>
     <button type="button" on:click={onBack} aria-label={t('app.back')} title={t('app.back')}><Icon name="back" /></button>
     <div><span>{t('graph.eyebrow')}</span><h1>{t('graph.title')}</h1></div>
-    {#if graph}<div class="graph-stats"><span>{graph.stats.files} {t('graph.files')}</span><span>{graph.stats.directories} {t('graph.directories')}</span><span>{graph.stats.dependencies} {t('graph.dependencies')}</span></div>{/if}
+    {#if graph}<div class="graph-stats"><span>{graph.stats.components} {t('graph.components')}</span><span>{graph.stats.files} {t('graph.files')}</span><span>{graph.stats.dependencies} {t('graph.dependencies')}</span></div>{/if}
     <button type="button" on:click={() => (panelOpen = !panelOpen)} class:active={panelOpen} aria-label={t('graph.controls')} title={t('graph.controls')}><Icon name="settings" /></button>
     <button type="button" on:click={onRefresh} disabled={loading} aria-label={t('graph.refresh')} title={t('graph.refresh')}><Icon name="refresh" /></button>
   </header>

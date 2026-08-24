@@ -1,7 +1,6 @@
 //! 校验重试策略（移植自 ai/retry_policy.py + retry_feedback.py）。
 //! a/b/d 类重试 retry_max（3）次；c 类按字段前缀判定；不可变字段篡改判定为 cheat。
 
-use super::prompts::render_feature_table;
 use super::types::{KlineFrame, ValidationSettings};
 use super::validator::ValidationError;
 use serde_json::Value;
@@ -103,7 +102,7 @@ pub fn build_retry_feedback(
     stage: &str,
     attempt: u32,
     max_attempts: u32,
-    frame: &KlineFrame,
+    _frame: &KlineFrame,
 ) -> String {
     let mut sections = vec![format!(
         "你上一轮输出的 {stage} JSON 校验失败（第 {attempt}/{max_attempts} 次重试）。"
@@ -127,10 +126,6 @@ pub fn build_retry_feedback(
     }
     if stage == "stage1" {
         sections.push("禁止修改不可变字段：direction、cycle_position、gate_result。".to_string());
-        sections.push(format!(
-            "再次附上 K 线几何特征表供参考：\n{}",
-            render_feature_table(frame, 20)
-        ));
     } else {
         sections.push("禁止修改 diagnosis_summary.cycle_position。".into());
         sections

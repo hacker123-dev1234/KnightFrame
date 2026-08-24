@@ -84,7 +84,7 @@ fn resolve_thinking_params(settings: &ProviderSettings) -> (Value, Option<String
         );
     }
     if is_packy && is_claude {
-        let budget = 524_287u64.min(128_000u64.saturating_sub(1).max(1024));
+        let budget = thinking_budget(settings);
         return (
             json!({"thinking": {"type": "enabled", "budget_tokens": budget}}),
             None,
@@ -97,13 +97,29 @@ fn resolve_thinking_params(settings: &ProviderSettings) -> (Value, Option<String
         );
     }
     if is_claude {
-        let budget = 524_287u64.min(524_288u64.saturating_sub(1).max(1024));
+        let budget = thinking_budget(settings);
         return (
             json!({"thinking": {"type": "enabled", "budget_tokens": budget}}),
             Some(effort.to_string()),
         );
     }
     (json!({}), Some(effort.to_string()))
+}
+
+fn thinking_budget(settings: &ProviderSettings) -> u64 {
+    let requested = match settings.reasoning_effort.as_str() {
+        "none" | "minimal" => 1_024,
+        "low" => 4_096,
+        "medium" => 8_192,
+        "high" => 16_384,
+        "xhigh" => 32_768,
+        _ => 65_536,
+    };
+    let output_limit = provider_max_output_tokens(settings);
+    let answer_reserve = (output_limit / 4).clamp(4_096, 16_384);
+    requested
+        .min(output_limit.saturating_sub(answer_reserve))
+        .max(1_024)
 }
 
 fn provider_max_output_tokens(settings: &ProviderSettings) -> u64 {
@@ -426,6 +442,27 @@ mod tests {
         let body = build_request_body(&settings, &[]);
         assert_eq!(body["reasoning_effort"], "high");
         assert!(body.get("thinking").is_none() || body["thinking"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn classic_claude_budget_tracks_effort_and_reserves_answer_space() {
+        let mut budgets = Vec::new();
+        for effort in ["minimal", "low", "medium", "high", "xhigh", "max"] {
+            let settings = settings(
+                "https://relay.example/v1",
+                "claude-3-7-sonnet",
+                true,
+                effort,
+            );
+            let body = build_request_body(&settings, &[]);
+            let budget = body["thinking"]["budget_tokens"].as_u64().unwrap();
+            assert!(budget < body["max_tokens"].as_u64().unwrap());
+            budgets.push(budget);
+        }
+        assert!(budgets.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(budgets[0], 1_024);
+        assert_eq!(budgets[2], 8_192);
+        assert_eq!(*budgets.last().unwrap(), 24_576);
     }
 
     #[test]

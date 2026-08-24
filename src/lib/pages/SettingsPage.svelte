@@ -20,6 +20,8 @@
   $: selectedModelId = settings.modelId ?? providers.find((model) => model.available)?.modelId;
   $: auxiliaryProviderId = settings.auxiliaryProviderId ?? '';
   $: auxiliaryModelId = settings.auxiliaryModelId ?? '';
+  $: subagentExecutionKey = settings.subagentExecutionProviderId && settings.subagentExecutionModelId
+    ? `${settings.subagentExecutionProviderId}::${settings.subagentExecutionModelId}` : '';
   let profiles: ProviderProfile[] = structuredClone(settings.providers ?? []);
   let templateId = 'openai';
   let probing = '';
@@ -81,6 +83,7 @@
         ...model,
         capabilities: manual.get(model.id)?.capabilities ?? model.capabilities,
         adapter: manual.get(model.id)?.adapter ?? model.adapter,
+        contextWindow: manual.get(model.id)?.contextWindow ?? model.contextWindow,
         thinkingEnabled: manual.get(model.id)?.thinkingEnabled ?? model.thinkingEnabled ?? false,
         thinkingEffort: manual.get(model.id)?.thinkingEffort ?? model.thinkingEffort ?? 'medium',
         thinkingToggle: model.thinkingToggle ?? manual.get(model.id)?.thinkingToggle ?? false,
@@ -95,7 +98,8 @@
     const first = profiles.flatMap((profile) => profile.models.map((model) => ({ providerId: profile.id, modelId: model.id })))[0];
     const selectedExists = profiles.some((profile) => profile.id === selectedProviderId && profile.models.some((model) => model.id === selectedModelId));
     const auxiliaryExists = profiles.some((profile) => profile.id === auxiliaryProviderId && profile.models.some((model) => model.id === auxiliaryModelId));
-    await update({ providers: profiles, providerId: selectedExists ? selectedProviderId : first?.providerId ?? '', modelId: selectedExists ? selectedModelId : first?.modelId ?? '', auxiliaryEnabled: settings.auxiliaryEnabled && Boolean(first), auxiliaryProviderId: auxiliaryExists ? auxiliaryProviderId : first?.providerId ?? '', auxiliaryModelId: auxiliaryExists ? auxiliaryModelId : first?.modelId ?? '' });
+    const subagentExists = profiles.some((profile) => profile.id === settings.subagentExecutionProviderId && profile.models.some((model) => model.id === settings.subagentExecutionModelId));
+    await update({ providers: profiles, providerId: selectedExists ? selectedProviderId : first?.providerId ?? '', modelId: selectedExists ? selectedModelId : first?.modelId ?? '', auxiliaryEnabled: settings.auxiliaryEnabled && Boolean(first), auxiliaryProviderId: auxiliaryExists ? auxiliaryProviderId : first?.providerId ?? '', auxiliaryModelId: auxiliaryExists ? auxiliaryModelId : first?.modelId ?? '', subagentExecutionProviderId: subagentExists ? settings.subagentExecutionProviderId : '', subagentExecutionModelId: subagentExists ? settings.subagentExecutionModelId : '' });
     providerNotice = t('settings.providers.saved');
   }
 
@@ -111,6 +115,11 @@
 
   async function selectAuxiliaryModel(providerId: string, modelId: string) {
     await update({ auxiliaryProviderId: providerId, auxiliaryModelId: modelId });
+  }
+
+  async function selectSubagentExecutionModel(value: string) {
+    const [providerId = '', modelId = ''] = value.split('::', 2);
+    await update({ subagentExecutionProviderId: providerId, subagentExecutionModelId: modelId });
   }
 
   function chooseAuxiliarySource(source: 'local' | 'network') {
@@ -355,6 +364,34 @@
           {/each}
         </div>
       {/if}
+      <div class="subagent-settings">
+        <div class="settings-list">
+          <label class="setting-row">
+            <div><strong>{t('settings.subagent')}</strong><p>{t('settings.subagent.detail')}</p></div>
+            <input type="checkbox" checked={settings.subagentEnabled !== false} disabled={saving} on:change={(event) => update({ subagentEnabled: event.currentTarget.checked })} />
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+        </div>
+        <div class="auxiliary-endpoint-form">
+          <label class="wide"><span>{t('settings.subagent.executionModel')}</span>
+            <select value={subagentExecutionKey} disabled={saving || settings.subagentEnabled === false} on:change={(event) => selectSubagentExecutionModel(event.currentTarget.value)}>
+              <option value="">{t('settings.subagent.inherit')}</option>
+              {#each providers.filter((model) => model.available) as model (`subagent:${model.providerId}:${model.modelId}`)}
+                <option value={`${model.providerId}::${model.modelId}`}>{model.providerName} · {model.modelName}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="wide"><span>{t('settings.subagent.executionEffort')}</span>
+            <select value={settings.subagentExecutionEffort ?? 'lowest'} disabled={saving || settings.subagentEnabled === false} on:change={(event) => update({ subagentExecutionEffort: event.currentTarget.value as SettingsSnapshot['subagentExecutionEffort'] })}>
+              <option value="lowest">{t('settings.subagent.lowest')}</option>
+              {#each ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as effort}
+                <option value={effort}>{t(`settings.providers.effort.${effort}`)}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+        <p class="settings-section-detail">{t('settings.subagent.reasoning')}</p>
+      </div>
       </div>
     </details>
 
