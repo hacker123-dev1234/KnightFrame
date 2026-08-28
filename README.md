@@ -4,59 +4,37 @@
 
 [English](README.en.md)
 
-KnightFrame 使用 Rust、Tauri 和 Svelte 构建。它以项目索引、精确工具和稳定请求前缀降低重复上下文，同时保留模型选择、工具过程与用量信息。
+KnightFrame 解决三类常见浪费：反复遍历项目、把完整工具输出塞回上下文、会话前缀频繁变化导致缓存失效。
 
-## 工作原理
+## 怎么做
 
-```mermaid
-flowchart LR
-    U[用户请求] --> R[本地规则与可选压缩]
-    R --> C[稳定会话上下文]
-    I[项目索引] --> Q[精确查询]
-    Q --> C
-    C --> A[模型适配器]
-    A --> L[Agent Loop]
-    L --> T[读取 / 编辑 / 运行 / 浏览器]
-    T --> P[本地完整结果 + 精简投影]
-    P --> L
-    L --> O[回答与可见记录]
-```
+- **项目索引**：记录文件、符号、行号和引用关系。先查询索引，再读取需要的行。
+- **精确工具**：完整结果留在本地，只把必要片段交给模型；读、写、搜索和运行结果可复用。
+- **稳定上下文**：系统提示、工具定义和历史按固定顺序追加，减少重复输入。
+- **用量可见**：显示输入、输出、缓存命中和估算费用。
 
-主模型负责推进任务。小模型、Skill 和记忆均为可选项；未启用时使用本地规则。
+模型、小模型、Skill 和记忆均由用户配置。记忆默认关闭。
 
-## 项目索引
+## 单次对照
 
-项目打开后，KnightFrame 建立全量速查索引：
+同一模型、10 个修复任务、每项只运行一次：
 
-- 文件与语言清单
-- 符号定义及所在行
-- 引用与被引用关系
-- 目录、模块和高关联节点
-- 编辑后的增量刷新
+| 指标 | KnightFrame | 对照组 |
+| --- | ---: | ---: |
+| 完成 | 9 / 10 | 8 / 10 |
+| 总 Token | 426,941 | 1,610,622 |
+| 请求次数 | 65 | 101 |
+| 用时 | 25:15 | 31:19 |
 
-查询优先从索引定位路径、符号和引用，再按需读取具体行。完整工具结果保存在本地，模型只接收完成任务所需的投影。
+这是一次测量，不代表稳定排名。原始汇总和计分方式见 [测试记录](docs/benchmark-2026-08-18.md)。
 
-## 状态
+## 当前状态
 
-当前为 Beta。核心对话、项目索引、工具、模型适配、内置浏览器和插件工坊可用；协议兼容性仍会随供应商行为继续校正。
-
-## 插件工坊宿主预览
-
-KnightFrame 预览使用构建产物内嵌的界面，不需要额外放置 KnightFrame 源码。插件设计和适配器导出也不依赖 DSH。
-
-真实 DSH 宿主预览需要本机存在已构建的 DSH 仓库。准备 Node.js 22.19+ 和 pnpm 11.7+，在 DSH 根目录执行：
-
-```powershell
-pnpm install --frozen-lockfile
-pnpm build
-[Environment]::SetEnvironmentVariable("KF_DSH_ROOT", "D:\Projects\deepseek-harness-master", "User")
-```
-
-`KF_DSH_ROOT` 应指向包含 `apps/cli/lib/bin.js` 的仓库根目录。重启 KnightFrame 后生效。也可将该仓库命名为 `deepseek-harness-master`，放在 `KnightFrame.exe` 同级目录或其上一级目录。
+支持项目索引、对话、模型适配、精确读写、命令运行、网页搜索、内置浏览器和插件工坊。当前仅重点测试 Windows，仍可能遇到供应商协议变化和长任务中断。
 
 ## 构建
 
-需要 Rust stable、Node.js 20+、pnpm 9+、Windows WebView2 和 Visual Studio C++ Build Tools。
+需要 Rust stable、Node.js 20+、pnpm 9+、WebView2 和 Visual Studio C++ Build Tools。
 
 ```powershell
 pnpm install
@@ -71,4 +49,12 @@ pnpm build:test-exe
 pnpm build:release
 ```
 
-项目使用 OpenAI Codex 协助开发与检查。
+## 插件工坊
+
+KnightFrame 预览已内嵌，不需要另一份源码。外部宿主预览为可选功能：构建宿主源码后，将 `KF_DSH_ROOT` 指向包含 `apps/cli/lib/bin.js` 的根目录，再重启 KnightFrame。
+
+```powershell
+[Environment]::SetEnvironmentVariable("KF_DSH_ROOT", "D:\Projects\host", "User")
+```
+
+Apache-2.0。项目使用 OpenAI Codex 协助开发与检查。
